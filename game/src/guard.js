@@ -1,190 +1,193 @@
-// EMBERWATCH: Night Shift — guard.js
-// Patroli, vision cone, suspicion, state machine guard,
-// dengar koin, respon tripwire/kamera/laser, tertangkap, suspicion tertinggi.
+// guard.js — patrol, vision cone, suspicion state machine, hearing,
+// tripwire response, catching the player, highest suspicion.
 
 import {
-  CONE_RANGE, CONE_HALF, CONE_SLICES, GUARD_R, CATCH_R,
-  CHASE_SPEED, CHASE_SPEED_VAULT, CURIOUS_SPEED, SUSP_LOOKBACK,
-  SUSP_DECAY, SUSP_BRIGHT, SUSP_SHADOW, SUSP_LAMP, SUSP_CLOSE,
-  SUSP_RUN, SUSP_FOOTSTEP, FOOTSTEP_R, SUSP_COIN_MIN,
+  GUARD_CONE_RANGE, GUARD_CONE_HALF, GUARD_ALERT_SPEED,
+  GUARD_CHASE_SPEED, GUARD_CHASE_SPEED_VAULT, CATCH_DIST,
+  COIN_HEAR_RADIUS, CLOSE_CALL_SCORE,
 } from './config.js';
 import {
-  dist, angDiff, raycast, losClear, losBlockedBySmoke,
-  inShadow, lampAt, inSmoke, collideCircle, addEvent, showToast,
+  clamp, dist, angleDiff, losBlocked, smokeBlocks, inShadow,
+  litLamp, collideCircle, addRipple, pushEvent, showToast,
 } from './world.js';
 
-// Apakah guard bisa melihat Wren sekarang (cone + garis pandang + asap).
-export function guardSees(g, state, px, py) {
-  const d = dist(g.x, g.y, px, py);
-  if (d > CONE_RANGE) return false;
-  const ang = Math.atan2(py - g.y, px - g.x);
-  if (Math.abs(angDiff(ang, g.face)) > CONE_HALF) return false;
-  if (!losClear(g.x, g.y, px, py, state.blocks)) return false;
-  if (inSmoke(px, py, state)) return false;
-  if (losBlockedBySmoke(g.x, g.y, px, py, state.smokes)) return false;
-  return true;
+export function makeGuards(floor, floorIndex) {
+  return floor.guards.map((g) => ({
+    name: g.name,
+    color: g.color,
+    x: g.waypoints[0][0],
+    y: g.waypoints[0][1],
+    facing: g.facing,
+    waypoints: g.waypoints,
+    wait: g.wait,
+    speed: g.speed,
+    wp: 1 % g.waypoints.length,
+    waiting: 0,
+    sweepDir: 1,
+    suspicion: 0,
+    stage: 'patrol', // patrol | curious | chasing
+    lastSeen: null,
+    investigate: null,
+    lookTimer: 0,
+    unseenTimer: 0,
+    peak: 0, // highest suspicion reached without a chase
+    rippleTimer: 0,
+  }));
 }
 
-// Titik-titik poligon cone untuk digambar (raycast 64 irisan).
-export function conePoints(g, state) {
-  const pts = [{ x: g.x, y: g.y }];
-  for (let i = 0; i <= CONE_SLICES; i++) {
-    const a = g.face - CONE_HALF + (2 * CONE_HALF * i) / CONE_SLICES;
-    const r = raycast(g.x, g.y, a, CONE_RANGE, state.blocks);
-    pts.push({ x: g.x + Math.cos(a) * r, y: g.y + Math.sin(a) * r });
-  }
-  return pts;
-}
-
-// Warna cone menurut tahap.
-export function coneColor(g) {
-  if (g.state === 'chase') return 'rgba(255,60,60,0.34)';
-  if (g.state === 'curious') return 'rgba(255,150,40,0.30)';
-  if (g.suspicion >= 60) return 'rgba(255,170,40,0.28)';
-  return 'rgba(255,230,140,0.20)';
-}
-
-export function guardWord(g) {
-  if (g.state === 'chase') return 'CHASING';
-  if (g.state === 'curious') return 'CURIOUS';
+export function guardStageName(g) {
+  if (g.stage === 'chasing') return 'CHASING';
+  if (g.stage === 'curious') return 'CURIOUS';
   if (g.suspicion >= 60) return 'SUSPICIOUS';
   return 'PATROL';
 }
 
-// Gerakkan guard menuju titik dengan kecepatan v; true kalau sudah sampai.
-function moveToward(g, tx, ty, v, dt, state) {
-  const d = dist(g.x, g.y, tx, ty);
-  if (d < 4) return true;
-  const step = Math.min(d, v * dt);
-  g.face = Math.atan2(ty - g.y, tx - g.x);
-  g.x += ((tx - g.x) / d) * step;
-  g.y += ((ty - g.y) / d) * step;
-  collideCircle(g, GUARD_R, state.blocks);
-  return d - step < 4;
-}
-
-// Satu guard, satu langkah dt. player = {x, y, running, hidden}.
-export function updateGuard(g, state, player, dt, onCaught, sfx) {
-  const sees = guardSees(g, state, player.x, player.y);
-  const dPlayer = dist(g.x, g.y, player.x, player.y);
-
-  // --- suspicion naik / turun ---
-  if (sees) {
-    let rate = inShadow(player.x, player.y, state.floor) ? SUSP_SHADOW : SUSP_BRIGHT;
-    if (lampAt(player.x, player.y, state)) rate += SUSP_LAMP;
-    if (dPlayer < 70) rate += SUSP_CLOSE;
-    if (player.running) rate += SUSP_RUN;
-    g.suspicion = Math.min(100, g.suspicion + rate * dt);
-    g.lastSeen = { x: player.x, y: player.y };
-    g.blindT = 0;
-  } else {
-    g.suspicion = Math.max(0, g.suspicion - SUSP_DECAY * dt);
-    g.blindT += dt;
-    // Langkah lari terdengar dari dekat.
-    if (player.running && dPlayer < FOOTSTEP_R) {
-      g.suspicion = Math.min(100, g.suspicion + SUSP_FOOTSTEP * dt);
-      if (!g.lastSeen) g.lastSeen = { x: player.x, y: player.y };
-    }
-  }
-  if (g.suspicion > g.peak) g.peak = g.suspicion;
-
-  // --- transisi tahap ---
-  if (g.suspicion >= 92 && g.state !== 'chase') {
-    g.state = 'chase';
-    g.hadChase = true;
-    state.spotted += 1;
-    addEvent(state, g.name + ': WHAT WAS THAT?');
-    showToast(state, 'SPOTTED!', 1.2);
-    if (sfx) sfx.alarm();
-  } else if (g.suspicion >= 60 && g.state === 'patrol') {
-    g.state = 'curious';
-    g.lookT = 0;
-  }
-
-  // --- perilaku per tahap ---
-  if (g.state === 'chase') {
-    const v = state.floorIdx === 2 ? CHASE_SPEED_VAULT : CHASE_SPEED;
-    moveToward(g, player.x, player.y, v, dt, state);
-    if (!sees && g.blindT > SUSP_LOOKBACK) {
-      g.state = 'curious';
-      g.lookT = 0;
-    }
-    if (dPlayer < CATCH_R) {
-      if (onCaught) onCaught(g);
-      return;
-    }
-  } else if (g.state === 'curious') {
-    const tgt = g.lastSeen || { x: g.x, y: g.y };
-    if (dist(g.x, g.y, tgt.x, tgt.y) > 6) {
-      moveToward(g, tgt.x, tgt.y, CURIOUS_SPEED, dt, state);
-    } else {
-      // Sampai di titik: melihat-lihat 1,4 detik, lalu tenang.
-      g.lookT += dt;
-      g.face += Math.sin(state.time * 2.2 + g.sweepT) * 0.9 * dt;
-      if (g.lookT > 1.4) {
-        g.state = 'patrol';
-        g.suspicion = Math.min(g.suspicion, 45);
-      }
-    }
-    if (!sees && g.blindT > SUSP_LOOKBACK && g.suspicion < 60) {
-      g.state = 'patrol';
-    }
-  } else {
-    // Patroli: waypoint, jeda + sapu pandang di tiap titik.
-    if (g.waiting > 0) {
-      g.waiting -= dt;
-      g.face += Math.sin(state.time * 0.9 + g.sweepT) * 0.55 * dt;
-    } else {
-      const wp = g.wps[g.wpIdx];
-      if (moveToward(g, wp.x, wp.y, g.speed, dt, state)) {
-        g.waiting = g.pause;
-        g.wpIdx = (g.wpIdx + 1) % g.wps.length;
-      }
-    }
-  }
-
-  // Riak langkah guard (jejak yang terlihat).
-  g.rippleT = (g.rippleT || 0) - dt;
-  if (g.rippleT <= 0) {
-    g.rippleT = 0.55;
-    state.ripples.push({ x: g.x, y: g.y, r: 4, max: 26, ttl: 0.9, t: 0, color: g.color });
-  }
-}
-
-// Koin mendarat: guard dalam radius dengar jadi waspada ke titik koin.
-export function guardsHearCoin(state, cx, cy) {
-  for (const g of state.guards) {
-    if (dist(g.x, g.y, cx, cy) < 280) {
-      g.suspicion = Math.max(g.suspicion, SUSP_COIN_MIN);
-      if (g.state === 'patrol') g.state = 'curious';
-      g.lastSeen = { x: cx, y: cy };
-      g.lookT = 0;
-    }
-  }
-}
-
-// Semua guard naik suspicion dan menuju satu titik (alarm kamera / laser / wire).
-export function guardsAlertAll(state, tx, ty, amount) {
-  for (const g of state.guards) {
-    g.suspicion = Math.min(100, g.suspicion + amount);
-    if (g.state === 'patrol') g.state = 'curious';
-    g.lastSeen = { x: tx, y: ty };
-    g.lookT = 0;
-  }
-}
-
-// Suspicion guard tertinggi saat ini (untuk alarm meter).
-export function maxSuspicion(state) {
+export function maxSuspicion(guards) {
   let m = 0;
-  for (const g of state.guards) m = Math.max(m, g.suspicion);
+  for (const g of guards) m = Math.max(m, g.suspicion);
   return m;
 }
 
-// Tahap alarm dari suspicion tertinggi: 0 CALM, 1 UNEASY, 2 HUNTED, 3 ALARM.
-export function alarmStage(state) {
-  const m = maxSuspicion(state);
-  if (m >= 92) return 3;
-  if (m >= 60) return 2;
-  if (m >= 30) return 1;
-  return 0;
+// Can this guard see the player right now?
+export function guardSees(state, g) {
+  const p = state.player;
+  const d = dist(g.x, g.y, p.x, p.y);
+  if (d > GUARD_CONE_RANGE) return false;
+  if (Math.abs(angleDiff(Math.atan2(p.y - g.y, p.x - g.x), g.facing)) > GUARD_CONE_HALF) return false;
+  if (losBlocked(state.floor, g.x, g.y, p.x, p.y)) return false;
+  if (smokeBlocks(state, g.x, g.y, p.x, p.y)) return false;
+  return true;
+}
+
+function moveToward(state, g, tx, ty, speed, dt) {
+  const d = dist(g.x, g.y, tx, ty);
+  if (d < 1) return true;
+  const step = Math.min(d, speed * dt);
+  const nx = g.x + ((tx - g.x) / d) * step;
+  const ny = g.y + ((ty - g.y) / d) * step;
+  g.facing = Math.atan2(ty - g.y, tx - g.x);
+  const [cx, cy] = collideCircle(state.floor, nx, ny, 19);
+  g.x = cx; g.y = cy;
+  return step >= d - 0.5;
+}
+
+export function hearCoin(state, guards, x, y) {
+  for (const g of guards) {
+    if (dist(g.x, g.y, x, y) < COIN_HEAR_RADIUS) {
+      g.suspicion = Math.max(g.suspicion, 28);
+      g.investigate = { x, y };
+      if (g.stage === 'patrol') g.stage = 'curious';
+    }
+  }
+}
+
+export function alertAllGuards(state, guards, x, y, amount) {
+  for (const g of guards) {
+    g.suspicion = clamp(g.suspicion + amount, 0, 100);
+    g.investigate = { x, y };
+    if (g.stage === 'patrol' && g.suspicion >= 60) g.stage = 'curious';
+    else if (g.stage === 'patrol') g.stage = 'curious';
+  }
+}
+
+export function updateGuards(state, guards, dt, onCaught, onSpotted) {
+  const p = state.player;
+  const floorIndex = state.floorIndex;
+  for (const g of guards) {
+    const sees = guardSees(state, g);
+    const d = dist(g.x, g.y, p.x, p.y);
+
+    if (sees) {
+      let rate = inShadow(state.floor, p.x, p.y) ? 16 : 55;
+      if (litLamp(state.floor, state.lampsLit, p.x, p.y) >= 0) rate += 14;
+      if (d < 70) rate += 30;
+      if (p.running) rate += 18;
+      g.suspicion = clamp(g.suspicion + rate * dt, 0, 100);
+      g.lastSeen = { x: p.x, y: p.y };
+      g.unseenTimer = 0;
+      if (g.suspicion > g.peak) g.peak = g.suspicion;
+    } else {
+      g.suspicion = clamp(g.suspicion - 14 * dt, 0, 100);
+      g.unseenTimer += dt;
+    }
+    // Footstep noise: running near a guard raises suspicion.
+    if (p.running && p.moving && d < 95 && !sees) {
+      g.suspicion = clamp(g.suspicion + 22 * dt, 0, 100);
+    }
+
+    // Stage transitions.
+    const wasStage = g.stage;
+    if (g.suspicion >= 92) g.stage = 'chasing';
+    else if (g.suspicion >= 60) g.stage = 'curious';
+    else if (g.stage === 'chasing' && g.unseenTimer > 4) g.stage = 'curious';
+    else if (g.stage === 'curious' && g.suspicion < 60 && !g.investigate) g.stage = 'patrol';
+    else if (g.stage === 'curious' && g.suspicion < 60 && g.investigate && g.lookTimer <= 0) {
+      g.investigate = null;
+      g.stage = 'patrol';
+    }
+    if (g.stage === 'chasing' && wasStage !== 'chasing') {
+      state.spotted += 1;
+      pushEvent(state, `${g.name}: WHAT WAS THAT?`);
+      showToast(state, 'SPOTTED!');
+      if (onSpotted) onSpotted(g);
+    }
+
+    // Near miss: peaked above 45, fell below 15, never chased.
+    if (g.peak > 45 && g.suspicion < 15 && wasStage !== 'chasing' && g.stage !== 'chasing') {
+      state.closeCalls += 1;
+      state.score += CLOSE_CALL_SCORE;
+      state.nearMissPct = Math.round(g.peak);
+      showToast(state, 'CLOSE CALL!');
+      pushEvent(state, 'Close call — almost had you.');
+      g.peak = 0;
+    }
+
+    // Movement by stage.
+    if (g.stage === 'chasing') {
+      const speed = floorIndex === 2 ? GUARD_CHASE_SPEED_VAULT : GUARD_CHASE_SPEED;
+      moveToward(state, g, p.x, p.y, speed, dt);
+      if (dist(g.x, g.y, p.x, p.y) < CATCH_DIST) {
+        if (onCaught) onCaught(g);
+        return;
+      }
+    } else if (g.stage === 'curious') {
+      const target = g.lastSeen || g.investigate;
+      if (target) {
+        const arrived = moveToward(state, g, target.x, target.y, GUARD_ALERT_SPEED, dt);
+        if (arrived) {
+          g.lookTimer = Math.max(g.lookTimer, 1.4);
+          if (g.lastSeen && dist(g.x, g.y, g.lastSeen.x, g.lastSeen.y) < 12) g.lastSeen = null;
+          if (g.investigate && dist(g.x, g.y, g.investigate.x, g.investigate.y) < 12) g.investigate = null;
+        }
+      } else {
+        g.lookTimer = Math.max(g.lookTimer, 0.2);
+      }
+      if (g.lookTimer > 0) {
+        g.lookTimer -= dt;
+        g.facing += 0.9 * dt * g.sweepDir;
+        if (g.lookTimer <= 0) { g.stage = 'patrol'; g.lookTimer = 0; }
+      }
+    } else {
+      // Patrol: walk to next waypoint, wait and sweep there.
+      if (g.waiting > 0) {
+        g.waiting -= dt;
+        g.facing += 0.35 * dt * g.sweepDir;
+      } else {
+        const wp = g.waypoints[g.wp];
+        const arrived = moveToward(state, g, wp[0], wp[1], g.speed, dt);
+        if (arrived) {
+          g.wp = (g.wp + 1) % g.waypoints.length;
+          g.waiting = g.wait;
+          g.sweepDir = -g.sweepDir;
+        }
+      }
+    }
+
+    // Footstep ripples.
+    g.rippleTimer -= dt;
+    if (g.rippleTimer <= 0) {
+      addRipple(state, g.x, g.y, 26, 0.9);
+      g.rippleTimer = 0.55;
+    }
+  }
 }

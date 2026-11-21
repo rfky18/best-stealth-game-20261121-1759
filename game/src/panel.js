@@ -1,423 +1,301 @@
-// EMBERWATCH: Night Shift — panel.js
-// Panel deteksi kanan saja (x 1008-1280): status, alarm meter,
-// visibility, noise, near-miss, loot/goal, GHOST, campaign, guards,
-// cameras, tactical map, legend, controls, feed.
-// Anggaran vertikal ketat: semua harus muat y 56-720.
+// panel.js — the right-hand detection panel (200px wide, x 1080-1280),
+// including alarm meter, campaign chips, per-guard bars, camera rows
+// and the tactical map. Everything must fit y 56-720 without clipping.
 
-import { COLORS, PANEL_X, PANEL_W } from './config.js';
-import { fmtTime, exitIsOpen } from './world.js';
-import { maxSuspicion, alarmStage, guardWord } from './guard.js';
-import { cameraWord, cameraAngle } from './camera.js';
-import { exposureAt, zoneWord } from './world.js';
+import {
+  CANVAS_H, HUD_H, PANEL_X, PANEL_W, PANEL_INNER_X, PANEL_INNER_W,
+  MAIN_X1, TOTAL_SHARDS,
+} from './config.js';
+import {
+  exposureOf, alarmStage, inSmoke, inShadow, litLamp, fmtTime,
+} from './world.js';
+import { maxSuspicion, guardStageName } from './guard.js';
+import { cameraStatus } from './camera.js';
+import { shardsLeft, exitOpen } from './player.js';
 
-const PX = PANEL_X + 10; // x konten
-const PW = PANEL_W - 20; // lebar konten 252
+const BG = '#0d1526';
+const SEP = '#1b2a4a';
+const HEAD = '#8fa3c8';
+const TEXT = '#e8eefc';
+const SUB = '#c7d2e8';
+const GOLD = '#ffd60a';
+const BAR_BG = '#22314f';
 
 function sectionTitle(ctx, y, text) {
-  ctx.fillStyle = COLORS.sectionTitle;
+  ctx.fillStyle = HEAD;
   ctx.font = 'bold 10px sans-serif';
   ctx.textAlign = 'left';
-  ctx.textBaseline = 'alphabetic';
-  ctx.fillText(text, PX, y);
-  return y + 4;
+  ctx.fillText(text, PANEL_INNER_X, y);
+  return y + 13;
 }
 
-function miniBar(ctx, x, y, w, h, frac, color) {
-  ctx.fillStyle = COLORS.barBg;
+function bar(ctx, x, y, w, h, frac, color) {
+  ctx.fillStyle = BAR_BG;
   ctx.fillRect(x, y, w, h);
-  if (frac > 0) {
-    ctx.fillStyle = color;
-    ctx.fillRect(x, y, Math.max(2, w * Math.min(1, frac)), h);
-  }
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, Math.max(0, Math.min(1, frac)) * w, h);
 }
 
-function barColorFor(v) {
-  if (v < 30) return '#2fd47a';
-  if (v < 70) return '#ffb020';
-  return '#ff5252';
-}
+export function drawPanel(ctx, game) {
+  const state = game.state;
+  const guards = state._guards;
+  const cameras = state._cameras;
+  ctx.fillStyle = BG;
+  ctx.fillRect(PANEL_X, HUD_H, PANEL_W, CANVAS_H - HUD_H);
+  ctx.strokeStyle = SEP;
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(PANEL_X, HUD_H); ctx.lineTo(PANEL_X, CANVAS_H); ctx.stroke();
 
-const ALARM_WORDS = ['CALM', 'UNEASY', 'HUNTED', 'ALARM'];
-const ALARM_COLORS = ['#2fd47a', '#ffd60a', '#ff9f43', '#ff5252'];
+  const ms = maxSuspicion(guards);
+  const stage = alarmStage(ms);
+  let y = HUD_H + 14;
 
-export function drawPanel(ctx, state, player, timeSec) {
-  ctx.save();
-  // Latar panel
-  ctx.fillStyle = COLORS.panelBg;
-  ctx.fillRect(PANEL_X, 56, PANEL_W, 664);
-  ctx.strokeStyle = COLORS.panelLine;
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(PANEL_X + 0.5, 56);
-  ctx.lineTo(PANEL_X + 0.5, 720);
-  ctx.stroke();
-
-  let y = 56;
-  const maxSusp = maxSuspicion(state);
-  const stage = alarmStage(state);
-  const anyChase = state.guards.some((g) => g.state === 'chase');
-
-  // ---- 1. DETECTION + kotak status besar ----
-  y = sectionTitle(ctx, y + 14, 'DETECTION');
-  const statusWord = anyChase ? 'CHASED!' : stage >= 2 ? 'ALERT!' : stage >= 1 ? 'SUSPICIOUS ?' : 'UNSEEN';
-  const statusColor = anyChase ? '#ff5252' : stage >= 2 ? '#ff9f43' : stage >= 1 ? '#ffd60a' : '#2fd47a';
-  const tip = anyChase ? 'Run! Break line of sight!' :
-    stage >= 2 ? 'They are searching. Hide now.' :
-    stage >= 1 ? 'A guard is uneasy. Break sight.' :
-    'Stay in shadow. Watch the cones.';
-  ctx.fillStyle = '#131f38';
-  ctx.fillRect(PX, y, PW, 46);
-  ctx.strokeStyle = statusColor;
-  ctx.strokeRect(PX + 0.5, y + 0.5, PW - 1, 45);
+  // 1. DETECTION status.
+  y = sectionTitle(ctx, y, 'DETECTION');
+  const statusWord = stage === 'CALM' ? 'UNSEEN' : stage === 'UNEASY' ? 'SUSPICIOUS ?' : stage === 'HUNTED' ? 'ALERT!' : 'CHASED!';
+  const statusColor = stage === 'CALM' ? '#7dffb0' : stage === 'UNEASY' ? '#ffd60a' : stage === 'HUNTED' ? '#ff9f43' : '#ff5555';
+  const advice = stage === 'CALM' ? 'All quiet. Keep moving.' : stage === 'UNEASY' ? 'A guard is curious. Hide.' : stage === 'HUNTED' ? 'They are looking for you!' : 'RUN! Break line of sight!';
   ctx.fillStyle = statusColor;
-  ctx.font = 'bold 20px sans-serif';
+  ctx.font = 'bold 17px sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText(statusWord, PX + 8, y + 22);
-  ctx.fillStyle = COLORS.textDim;
+  ctx.fillText(statusWord, PANEL_INNER_X, y + 15);
+  ctx.fillStyle = SUB;
   ctx.font = '10px sans-serif';
-  ctx.fillText(tip, PX + 8, y + 38);
-  y += 46 + 8;
+  ctx.fillText(advice, PANEL_INNER_X, y + 28);
+  y += 38;
 
-  // ---- 2. ALARM METER empat segmen ----
-  y = sectionTitle(ctx, y + 10, 'ALARM');
-  const segW = (PW - 3 * 4) / 4;
+  // 2. Alarm meter, 4 segments.
+  y = sectionTitle(ctx, y, 'ALARM');
+  const segW = (PANEL_INNER_W - 18) / 4;
+  const filled = stage === 'CALM' ? 1 : stage === 'UNEASY' ? 2 : stage === 'HUNTED' ? 3 : 4;
+  const segColors = ['#7dffb0', '#ffd60a', '#ff9f43', '#ff5555'];
   for (let i = 0; i < 4; i++) {
-    const sx = PX + i * (segW + 4);
-    const filled = i <= stage;
-    ctx.fillStyle = filled ? ALARM_COLORS[i] : COLORS.barBg;
-    ctx.fillRect(sx, y, segW, 14);
-    ctx.fillStyle = filled ? ALARM_COLORS[i] : '#5a6b8c';
-    ctx.font = 'bold 7px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(ALARM_WORDS[i], sx + segW / 2, y + 24);
+    ctx.fillStyle = i < filled ? segColors[i] : BAR_BG;
+    ctx.fillRect(PANEL_INNER_X + i * (segW + 6), y, segW, 10);
   }
+  y += 14;
+  ctx.fillStyle = HEAD;
+  ctx.font = '8px sans-serif';
+  const segNames = ['CALM', 'UNEASY', 'HUNTED', 'ALARM'];
+  segNames.forEach((n, i) => {
+    ctx.textAlign = i === 0 ? 'left' : i === 3 ? 'right' : 'center';
+    const cx = PANEL_INNER_X + i * (segW + 6) + (i === 0 ? 0 : i === 3 ? segW : segW / 2);
+    ctx.fillText(n, cx, y + 8);
+  });
+  y += 14;
+
+  // 3. Visibility.
+  const exp = exposureOf(state);
+  const expWord = inSmoke(state, state.player.x, state.player.y) ? 'IN SMOKE' : inShadow(state.floor, state.player.x, state.player.y) ? 'IN SHADOW' : litLamp(state.floor, state.lampsLit, state.player.x, state.player.y) >= 0 ? 'IN LAMPLIGHT' : 'IN THE OPEN';
+  const expColor = exp < 30 ? '#7dffb0' : exp < 70 ? '#ffd60a' : '#ff5555';
+  ctx.fillStyle = SUB;
+  ctx.font = '10px sans-serif';
   ctx.textAlign = 'left';
-  y += 14 + 16;
-
-  // ---- 3. VISIBILITY ----
-  const expo = exposureAt(player.x, player.y, state, player.running);
-  const zw = zoneWord(player.x, player.y, state, player.running);
-  ctx.fillStyle = COLORS.textDim;
-  ctx.font = 'bold 10px sans-serif';
-  ctx.fillText('VISIBILITY', PX, y + 10);
-  miniBar(ctx, PX + 78, y + 2, 96, 10, expo / 100, barColorFor(expo));
-  ctx.fillStyle = COLORS.text;
-  ctx.font = '9px sans-serif';
-  ctx.fillText(zw + ' ' + expo + '%', PX + 180, y + 10);
-  y += 16;
-
-  // ---- 4. NOISE ----
-  const coinNoise = state.coinNoiseT > 0;
-  const noiseWord = coinNoise ? 'COIN CLINK' : player.running ? 'LOUD — RUNNING' : 'SILENT';
-  ctx.fillStyle = COLORS.textDim;
-  ctx.font = 'bold 10px sans-serif';
-  ctx.fillText('NOISE', PX, y + 10);
-  ctx.fillStyle = coinNoise ? COLORS.gold : player.running ? '#ff9f43' : '#2fd47a';
-  ctx.font = '10px sans-serif';
-  ctx.fillText(noiseWord, PX + 78, y + 10);
-  y += 16;
-
-  // ---- 5. NEAR MISS ----
-  const nm = state.nearMissPct != null ? state.nearMissPct + '%' : '—';
-  ctx.fillStyle = COLORS.textDim;
-  ctx.font = 'bold 10px sans-serif';
-  ctx.fillText('NEAR MISS', PX, y + 10);
-  ctx.fillStyle = COLORS.gold;
-  ctx.font = 'bold 11px sans-serif';
-  ctx.fillText(nm, PX + 78, y + 10);
-  ctx.fillStyle = COLORS.textDim;
-  ctx.font = '10px sans-serif';
+  ctx.fillText('VISIBILITY', PANEL_INNER_X, y + 9);
+  bar(ctx, PANEL_INNER_X + 62, y + 1, 78, 8, exp / 100, expColor);
+  ctx.fillStyle = TEXT;
   ctx.textAlign = 'right';
-  ctx.fillText('CLOSE CALLS ' + state.closeCalls, PX + PW, y + 10);
+  ctx.fillText(`${expWord} ${exp}%`, PANEL_X + PANEL_W - 6, y + 9);
+  y += 15;
+
+  // 4. Noise.
+  const noise = state._coinPing ? 'COIN CLINK' : state.player.running && state.player.moving ? 'LOUD — RUNNING' : 'SILENT';
+  ctx.fillStyle = SUB;
   ctx.textAlign = 'left';
-  y += 16;
+  ctx.fillText('NOISE', PANEL_INNER_X, y + 9);
+  ctx.fillStyle = noise === 'SILENT' ? TEXT : '#ff9f43';
+  ctx.textAlign = 'right';
+  ctx.fillText(noise, PANEL_X + PANEL_W - 6, y + 9);
+  y += 15;
 
-  // ---- 6. Grid 2 kolom: LOOT/SPOTTED, GOAL/TAKE ----
-  const goalWord = state.floorDone ? 'DONE' : exitIsOpen(state) ? 'READY — GO!' : 'NOT YET';
-  const goalColor = state.floorDone ? '#2fd47a' : exitIsOpen(state) ? '#2fd47a' : COLORS.textDim;
-  const midX = PX + PW / 2;
-  ctx.strokeStyle = COLORS.panelLine;
-  ctx.beginPath();
-  ctx.moveTo(PX, y + 2); ctx.lineTo(PX + PW, y + 2);
-  ctx.moveTo(midX, y + 2); ctx.lineTo(midX, y + 34);
-  ctx.moveTo(PX, y + 18); ctx.lineTo(PX + PW, y + 18);
-  ctx.stroke();
-  ctx.fillStyle = COLORS.textDim;
-  ctx.font = '9px sans-serif';
-  ctx.fillText('LOOT', PX + 4, y + 12);
-  ctx.fillText('SPOTTED', midX + 4, y + 12);
-  ctx.fillText('GOAL', PX + 4, y + 28);
-  ctx.fillText('TAKE', midX + 4, y + 28);
-  ctx.fillStyle = COLORS.text;
-  ctx.font = 'bold 11px sans-serif';
-  ctx.fillText(state.lootTotal + '/16', PX + 44, y + 12);
-  ctx.fillText(String(state.spotted), midX + 54, y + 12);
-  ctx.fillStyle = goalColor;
-  ctx.fillText(goalWord, PX + 44, y + 28);
-  ctx.fillStyle = COLORS.gold;
-  ctx.fillText('$' + state.take.toLocaleString('en-US'), midX + 44, y + 28);
-  y += 36;
+  // 5. Near miss.
+  ctx.fillStyle = SUB;
+  ctx.textAlign = 'left';
+  ctx.fillText('NEAR MISS', PANEL_INNER_X, y + 9);
+  ctx.fillStyle = TEXT;
+  ctx.textAlign = 'right';
+  ctx.fillText(`${state.nearMissPct === null ? '—' : state.nearMissPct + '%'}   CLOSE CALLS ${state.closeCalls}`, PANEL_X + PANEL_W - 6, y + 9);
+  y += 15;
 
-  // ---- 7. GHOST ----
-  ctx.fillStyle = state.spotted > 0 ? '#7a8699' : '#2fd47a';
+  // 6. Grid 2 cols: LOOT | SPOTTED ; GOAL | TAKE.
+  const totalLoot = (game.lootBefore || 0) + state.shardsTaken.filter(Boolean).length;
+  const goal = state.floorIndex === 2 && exitOpen(state) ? 'DONE' : exitOpen(state) ? 'READY — GO!' : 'NOT YET';
+  ctx.fillStyle = SUB;
   ctx.font = '10px sans-serif';
-  ctx.fillText(
-    state.spotted > 0 ? 'GHOST bonus lost — you were spotted' : 'GHOST +500 if unseen at the end',
-    PX, y + 10,
-  );
-  y += 16;
+  ctx.textAlign = 'left';
+  ctx.fillText(`LOOT ${totalLoot}/${TOTAL_SHARDS}`, PANEL_INNER_X, y + 9);
+  ctx.textAlign = 'right';
+  ctx.fillText(`SPOTTED ${state.spotted}`, PANEL_X + PANEL_W - 6, y + 9);
+  y += 13;
+  ctx.textAlign = 'left';
+  ctx.fillText(`GOAL ${goal}`, PANEL_INNER_X, y + 9);
+  ctx.fillStyle = GOLD;
+  ctx.textAlign = 'right';
+  ctx.fillText(`TAKE $${state.take}`, PANEL_X + PANEL_W - 6, y + 9);
+  y += 15;
 
-  // ---- 8. CAMPAIGN ----
-  y = sectionTitle(ctx, y + 10, 'CAMPAIGN');
-  const chipW = (PW - 2 * 6) / 3;
+  // 7. Ghost row.
+  ctx.fillStyle = state.spotted === 0 ? '#7dffb0' : SUB;
+  ctx.font = '10px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(state.spotted === 0 ? 'GHOST +500 if unseen at the end' : 'GHOST bonus lost — spotted', PANEL_INNER_X, y + 9);
+  y += 17;
+
+  // 8. Campaign chips.
+  y = sectionTitle(ctx, y, 'CAMPAIGN');
+  const chipW = 56;
   for (let i = 0; i < 3; i++) {
-    const cx = PX + i * (chipW + 6);
-    const done = state.nightDone[i];
-    const now = i === state.floorIdx && !done;
-    const mark = done ? '✓' : now ? '▸' : '·';
-    const label = done ? 'DONE' : now ? 'NOW' : '—';
-    ctx.fillStyle = done ? '#1d4d33' : now ? '#4a3600' : '#131f38';
-    ctx.fillRect(cx, y, chipW, 18);
-    ctx.strokeStyle = done ? '#2fd47a' : now ? COLORS.gold : COLORS.panelLine;
-    ctx.strokeRect(cx + 0.5, y + 0.5, chipW - 1, 17);
-    ctx.fillStyle = done ? '#2fd47a' : now ? COLORS.gold : COLORS.textDim;
+    const x = PANEL_INNER_X + i * (chipW + 6);
+    const done = game.campaignDone || i < state.floorIndex;
+    const now = !game.campaignDone && i === state.floorIndex;
+    ctx.fillStyle = done ? '#1d5c38' : now ? '#3a2f00' : BAR_BG;
+    ctx.fillRect(x, y, chipW, 18);
+    ctx.strokeStyle = now ? GOLD : SEP;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, chipW, 18);
+    ctx.fillStyle = done ? '#7dffb0' : now ? GOLD : SUB;
     ctx.font = 'bold 11px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('N' + (i + 1) + ' ' + mark, cx + chipW / 2, y + 13);
-    ctx.fillStyle = COLORS.textDim;
-    ctx.font = '8px sans-serif';
-    ctx.fillText(label, cx + chipW / 2, y + 28);
+    ctx.fillText(`N${i + 1} ${done ? '✓' : now ? '>' : '·'}`, x + chipW / 2, y + 13);
   }
-  ctx.textAlign = 'left';
-  y += 32;
+  y += 24;
 
-  // ---- 9. GUARDS ----
-  y = sectionTitle(ctx, y + 10, 'GUARDS');
-  for (const g of state.guards) {
+  // 9. Guards list.
+  y = sectionTitle(ctx, y, 'GUARDS');
+  for (const g of guards) {
     ctx.fillStyle = g.color;
-    ctx.beginPath();
-    ctx.arc(PX + 5, y + 4, 4, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = COLORS.text;
+    ctx.beginPath(); ctx.arc(PANEL_INNER_X + 4, y + 3, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = TEXT;
     ctx.font = '10px sans-serif';
-    ctx.fillText(g.name, PX + 14, y + 8);
-    const bw = 92;
-    miniBar(ctx, PX + 78, y + 1, bw, 8, g.suspicion / 100,
-      g.suspicion >= 92 ? '#ff5252' : g.suspicion >= 60 ? '#ff9f43' : '#ffd60a');
-    ctx.fillStyle = g.state === 'chase' ? '#ff5252' : g.state === 'curious' ? '#ff9f43' : COLORS.textDim;
-    ctx.font = '9px sans-serif';
-    ctx.fillText(guardWord(g), PX + 176, y + 8);
+    ctx.textAlign = 'left';
+    ctx.fillText(g.name, PANEL_INNER_X + 12, y + 7);
+    bar(ctx, PANEL_INNER_X + 52, y + 1, 72, 6, g.suspicion / 100, g.suspicion >= 92 ? '#ff4444' : g.suspicion >= 60 ? '#ff9f43' : '#ffd60a');
+    ctx.fillStyle = SUB;
+    ctx.textAlign = 'right';
+    const st = guardStageName(g);
+    ctx.fillText(st === 'SUSPICIOUS' ? 'SUSP.' : st === 'CHASING' ? 'CHASE' : st, PANEL_X + PANEL_W - 6, y + 7);
     y += 13;
   }
-  y += 2;
+  y += 3;
 
-  // ---- 10. CAMERAS ----
-  y = sectionTitle(ctx, y + 10, 'CAMERAS');
-  for (const cam of state.cameras) {
-    ctx.fillStyle = '#74c0fc';
-    ctx.beginPath();
-    ctx.moveTo(PX + 5, y + 1);
-    ctx.lineTo(PX + 1, y + 9);
-    ctx.lineTo(PX + 9, y + 9);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = COLORS.text;
-    ctx.font = '10px sans-serif';
-    ctx.fillText(cam.id, PX + 14, y + 9);
-    miniBar(ctx, PX + 44, y + 1, 96, 8, cam.alert / 100,
-      cam.alert >= 100 ? '#ff5252' : cam.alert > 2 ? '#74c0fc' : '#74c0fc');
-    ctx.fillStyle = COLORS.text;
-    ctx.fillText(cam.id + ' ' + Math.round(cam.alert) + '%', PX + 148, y + 9);
-    ctx.fillStyle = cam.alert > 2 ? '#74c0fc' : COLORS.textDim;
-    ctx.font = '9px sans-serif';
-    ctx.fillText(cameraWord(cam), PX + 200, y + 9);
-    y += 14;
+  // 10. Cameras.
+  y = sectionTitle(ctx, y, 'CAMERAS');
+  for (const cam of cameras) {
+    ctx.fillStyle = '#7fc4ff';
+    ctx.font = 'bold 10px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(cam.label, PANEL_INNER_X, y + 7);
+    bar(ctx, PANEL_INNER_X + 24, y + 1, 72, 6, cam.alert / 100, cam.alert >= 100 ? '#ff4444' : '#7fc4ff');
+    ctx.fillStyle = TEXT;
+    ctx.textAlign = 'right';
+    ctx.fillText(`${Math.round(cam.alert)}%  ${cameraStatus(cam)}`, PANEL_X + PANEL_W - 6, y + 7);
+    y += 13;
   }
-  y += 2;
+  y += 3;
 
-  // ---- 11. TACTICAL MAP ----
-  y = sectionTitle(ctx, y + 10, 'TACTICAL MAP');
-  const mapH = 78;
-  const mapW = PW;
-  const sx = mapW / 1008, sy = mapH / 664;
-  const mx = (x) => PX + x * sx;
-  const my = (yy) => y + (yy - 56) * sy;
+  // 11. Tactical map 184x76.
+  y = sectionTitle(ctx, y, 'TACTICAL MAP');
+  const mapX = PANEL_INNER_X + 2;
+  const mapY = y;
+  const mapW = 184, mapH = 76;
   ctx.fillStyle = '#0a1120';
-  ctx.fillRect(PX, y, mapW, mapH);
-  ctx.strokeStyle = COLORS.panelLine;
-  ctx.strokeRect(PX + 0.5, y + 0.5, mapW - 1, mapH - 1);
-  // dinding
-  ctx.fillStyle = '#2a3a5e';
-  for (const b of state.blocks) {
-    if (b.w === 44 && b.h === 44) continue; // peti dilewati
-    ctx.fillRect(mx(b.x), my(b.y), Math.max(1, b.w * sx), Math.max(1, b.h * sy));
-  }
-  // tripwire + laser
-  ctx.strokeStyle = 'rgba(255,82,82,0.8)';
-  ctx.lineWidth = 1;
-  for (const w of state.wires) {
-    ctx.beginPath();
-    ctx.moveTo(mx(w.x1), my(w.y1));
-    ctx.lineTo(mx(w.x2), my(w.y2));
-    ctx.stroke();
-  }
+  ctx.fillRect(mapX, mapY, mapW, mapH);
+  ctx.strokeStyle = SEP;
+  ctx.strokeRect(mapX, mapY, mapW, mapH);
+  const mx = (x) => mapX + (x / MAIN_X1) * mapW;
+  const my = (yy) => mapY + ((yy - HUD_H) / (CANVAS_H - HUD_H)) * mapH;
+  ctx.fillStyle = '#2c3a5e';
+  for (const r of state.floor.walls) ctx.fillRect(mx(r[0]), my(r[1]), Math.max(1, (r[2] / MAIN_X1) * mapW), Math.max(1, (r[3] / (CANVAS_H - HUD_H)) * mapH));
   if (state.laser) {
-    ctx.beginPath();
-    ctx.moveTo(mx(state.laser.x1), my(state.laser.y1));
-    ctx.lineTo(mx(state.laser.x2), my(state.laser.y2));
-    ctx.stroke();
+    ctx.strokeStyle = '#ff4444';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(mx(state.laser.a[0]), my(state.laser.a[1])); ctx.lineTo(mx(state.laser.b[0]), my(state.laser.b[1])); ctx.stroke();
   }
-  // bayangan (samar)
-  ctx.fillStyle = 'rgba(116,192,252,0.10)';
-  for (const s of state.floor.shadows) {
-    ctx.fillRect(mx(s.x), my(s.y), s.w * sx, s.h * sy);
+  ctx.strokeStyle = 'rgba(255,80,80,0.7)';
+  for (const w of state.wires) {
+    ctx.beginPath(); ctx.moveTo(mx(w.a[0]), my(w.a[1])); ctx.lineTo(mx(w.b[0]), my(w.b[1])); ctx.stroke();
   }
-  // shard
-  ctx.fillStyle = '#ff9f43';
-  for (const s of state.shards) {
-    if (s.got) continue;
-    ctx.beginPath();
-    ctx.arc(mx(s.x), my(s.y), 2, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  // exit
   const e = state.floor.exit;
-  ctx.fillStyle = exitIsOpen(state) ? '#2fd47a' : '#1d7a4a';
-  ctx.fillRect(mx(e.x), my(e.y), Math.max(3, e.w * sx), Math.max(3, e.h * sy));
-  // kamera: segitiga biru
-  ctx.fillStyle = '#74c0fc';
-  for (const cam of state.cameras) {
-    const cx = mx(cam.x), cy = my(cam.y);
+  ctx.fillStyle = '#2ecc71';
+  ctx.fillRect(mx(e[0]), my(e[1]), 8, 8);
+  ctx.fillStyle = '#ff9f1c';
+  for (let i = 0; i < state.floor.shards.length; i++) {
+    if (state.shardsTaken[i]) continue;
+    const s = state.floor.shards[i];
+    ctx.fillRect(mx(s[0]) - 1.5, my(s[1]) - 1.5, 3, 3);
+  }
+  for (const cam of cameras) {
+    ctx.fillStyle = '#7fc4ff';
     ctx.beginPath();
-    ctx.moveTo(cx, cy - 4);
-    ctx.lineTo(cx - 3, cy + 3);
-    ctx.lineTo(cx + 3, cy + 3);
+    ctx.moveTo(mx(cam.x), my(cam.y) - 3);
+    ctx.lineTo(mx(cam.x) + 3, my(cam.y) + 2);
+    ctx.lineTo(mx(cam.x) - 3, my(cam.y) + 2);
     ctx.closePath();
     ctx.fill();
   }
-  // guard: titik warna + garis hadap
-  for (const g of state.guards) {
+  for (const g of guards) {
     ctx.fillStyle = g.color;
-    ctx.beginPath();
-    ctx.arc(mx(g.x), my(g.y), 3, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.beginPath(); ctx.arc(mx(g.x), my(g.y), 3, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = g.color;
     ctx.beginPath();
     ctx.moveTo(mx(g.x), my(g.y));
-    ctx.lineTo(mx(g.x) + Math.cos(g.face) * 7, my(g.y) + Math.sin(g.face) * 7);
+    ctx.lineTo(mx(g.x) + Math.cos(g.facing) * 6, my(g.y) + Math.sin(g.facing) * 6);
     ctx.stroke();
   }
-  // Wren: titik putih bercincin
+  const p = state.player;
   ctx.fillStyle = '#ffffff';
-  ctx.beginPath();
-  ctx.arc(mx(player.x), my(player.y), 3, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.beginPath(); ctx.arc(mx(p.x), my(p.y), 3, 0, Math.PI * 2); ctx.fill();
   ctx.strokeStyle = '#ffffff';
-  ctx.beginPath();
-  ctx.arc(mx(player.x), my(player.y), 5, 0, Math.PI * 2);
-  ctx.stroke();
-  y += mapH + 4;
+  ctx.beginPath(); ctx.arc(mx(p.x), my(p.y), 5, 0, Math.PI * 2); ctx.stroke();
+  y = mapY + mapH + 6;
 
-  // ---- 12. LEGEND (9 item, 2 kolom) ----
-  y = sectionTitle(ctx, y + 10, 'LEGEND');
+  // 12. Legend, 2 columns, short labels.
+  y = sectionTitle(ctx, y, 'LEGEND');
   const legend = [
-    ['guard', 'guard + vision cone'],
-    ['camera', 'camera — sweeps a cone'],
-    ['shadow', 'shadow — hide here'],
-    ['crate', 'crate — blocks sight'],
-    ['lamp', 'lamp — you are seen'],
-    ['wire', 'tripwire — alarm'],
-    ['laser', 'laser — timed beam'],
-    ['shard', 'ember shard — 100 · $150'],
-    ['exit', 'exit — open if looted'],
+    ['#ffd60a', 'guard · cone'], ['#7fc4ff', 'camera · sweeps'],
+    ['#3a4a6b', 'shadow · hide'], ['#8a6a3d', 'crate · blocks sight'],
+    ['#ffb347', 'lamp · seen'], ['#ff5555', 'tripwire · alarm'],
+    ['#ff2222', 'laser · timed'], ['#ff9f1c', 'shard · 100 · $150'],
+    ['#2ecc71', 'exit · open if looted'],
   ];
-  const col2X = PX + 134;
-  legend.forEach((item, i) => {
-    const lx = i % 2 === 0 ? PX : col2X;
-    const ly = y + Math.floor(i / 2) * 11;
-    drawLegendIcon(ctx, item[0], lx + 4, ly + 3);
-    ctx.fillStyle = COLORS.textDim;
-    ctx.font = '9px sans-serif';
-    ctx.fillText(item[1], lx + 12, ly + 6);
-  });
+  ctx.font = '9px sans-serif';
+  for (let i = 0; i < legend.length; i++) {
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    const lx = PANEL_INNER_X + col * 96;
+    const ly = y + row * 11;
+    ctx.fillStyle = legend[i][0];
+    ctx.fillRect(lx, ly - 2, 7, 7);
+    ctx.fillStyle = SUB;
+    ctx.textAlign = 'left';
+    ctx.fillText(legend[i][1], lx + 10, ly + 5);
+  }
   y += Math.ceil(legend.length / 2) * 11 + 4;
 
-  // ---- 13. CONTROLS ----
-  y = sectionTitle(ctx, y + 10, 'CONTROLS');
-  ctx.fillStyle = COLORS.textDim;
+  // 13. Controls, 2 short rows.
+  y = sectionTitle(ctx, y, 'CONTROLS');
+  ctx.fillStyle = SUB;
   ctx.font = '9px sans-serif';
-  ctx.fillText('WASD move · SHIFT sneak · CLICK / C coin', PX, y + 12);
-  ctx.fillText('Q smoke · E douse a lamp · P pause · M mute', PX, y + 23);
-  y += 34;
+  ctx.textAlign = 'left';
+  ctx.fillText('WASD move · SHIFT sneak · CLICK coin', PANEL_INNER_X, y + 8);
+  ctx.fillText('Q smoke · E douse lamp · P pause · M mute', PANEL_INNER_X, y + 19);
+  y += 30;
 
-  // ---- 14. WHAT HAPPENED ----
-  y = sectionTitle(ctx, y + 10, 'WHAT HAPPENED');
-  const feed = state.events.slice(-2);
-  if (feed.length === 0) {
-    ctx.fillStyle = COLORS.textDim;
+  // 14. What happened — last two events, never clipped.
+  y = sectionTitle(ctx, y, 'WHAT HAPPENED');
+  if (state.events.length === 0) {
+    ctx.fillStyle = SUB;
     ctx.font = '10px sans-serif';
-    ctx.fillText('The night is quiet. So far.', PX, y + 12);
+    ctx.textAlign = 'left';
+    ctx.fillText('The night is quiet. So far.', PANEL_INNER_X, y + 9);
   } else {
     ctx.font = '10px sans-serif';
-    feed.forEach((ev, i) => {
-      ctx.fillStyle = '#8fa3c8';
-      ctx.fillText(fmtTime(ev.t), PX, y + 12 + i * 13);
-      ctx.fillStyle = COLORS.text;
-      ctx.fillText(ev.text, PX + 38, y + 12 + i * 13);
+    state.events.forEach((ev, i) => {
+      ctx.fillStyle = SUB;
+      ctx.textAlign = 'left';
+      ctx.fillText(fmtTime(ev.t), PANEL_INNER_X, y + 9 + i * 12);
+      ctx.fillStyle = TEXT;
+      ctx.fillText(ev.text, PANEL_INNER_X + 32, y + 9 + i * 12);
     });
   }
-  ctx.restore();
-}
-
-function drawLegendIcon(ctx, kind, x, y) {
-  ctx.save();
-  switch (kind) {
-    case 'guard':
-      ctx.fillStyle = '#ff9f43';
-      ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = 'rgba(255,230,140,0.6)';
-      ctx.beginPath(); ctx.moveTo(x + 3, y); ctx.lineTo(x + 8, y - 3); ctx.lineTo(x + 8, y + 3); ctx.closePath(); ctx.fill();
-      break;
-    case 'camera':
-      ctx.fillStyle = '#74c0fc';
-      ctx.beginPath(); ctx.moveTo(x, y - 3); ctx.lineTo(x - 3, y + 3); ctx.lineTo(x + 3, y + 3); ctx.closePath(); ctx.fill();
-      break;
-    case 'shadow':
-      ctx.fillStyle = 'rgba(116,192,252,0.35)';
-      ctx.fillRect(x - 4, y - 3, 9, 6);
-      ctx.strokeStyle = '#74c0fc';
-      ctx.setLineDash([2, 2]);
-      ctx.strokeRect(x - 4.5, y - 3.5, 9, 6);
-      ctx.setLineDash([]);
-      break;
-    case 'crate':
-      ctx.fillStyle = '#8a6d4b';
-      ctx.fillRect(x - 3, y - 3, 6, 6);
-      ctx.strokeStyle = '#5d4630';
-      ctx.beginPath(); ctx.moveTo(x - 3, y - 3); ctx.lineTo(x + 3, y + 3); ctx.moveTo(x + 3, y - 3); ctx.lineTo(x - 3, y + 3); ctx.stroke();
-      break;
-    case 'lamp':
-      ctx.fillStyle = '#ffb020';
-      ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill();
-      break;
-    case 'wire':
-      ctx.strokeStyle = '#ff5252';
-      ctx.beginPath(); ctx.moveTo(x - 4, y); ctx.lineTo(x + 5, y); ctx.stroke();
-      break;
-    case 'laser':
-      ctx.strokeStyle = '#ff2020';
-      ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(x - 4, y); ctx.lineTo(x + 5, y); ctx.stroke();
-      ctx.lineWidth = 1;
-      break;
-    case 'shard':
-      ctx.fillStyle = '#ff9f43';
-      ctx.beginPath(); ctx.moveTo(x, y - 4); ctx.lineTo(x + 3, y); ctx.lineTo(x, y + 4); ctx.lineTo(x - 3, y); ctx.closePath(); ctx.fill();
-      break;
-    case 'exit':
-      ctx.fillStyle = '#2fd47a';
-      ctx.fillRect(x - 3, y - 4, 6, 8);
-      break;
-  }
-  ctx.restore();
 }

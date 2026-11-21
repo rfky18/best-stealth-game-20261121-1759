@@ -1,1 +1,1 @@
-{"type":"module"}
+{"description":"Emberwatch: Night Shift — a top-down 2D stealth game. Three nights, sixteen ember shards, guards, cameras, tripwires and one laser.","license":"MIT","name":"emberwatch-night-shift","private":true,"scripts":{"handin":"node main.ts","serve":"node serve.ts"},"type":"module","version":"5.0.0"}

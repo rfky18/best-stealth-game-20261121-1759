@@ -1,324 +1,214 @@
-// EMBERWATCH: Night Shift — main.js
-// Boot, loop fixed-step 1/60 detik, layar, bonus GHOST sekali saat menang,
-// skor terbaik (localStorage), mode screenshot staged (?shot=nama).
+// main.js — boot, fixed-step loop, screens, GHOST bonus, best score.
 
-import { FLOORS, NIGHT_CARD_TIME, GHOST_PTS, LIVES_MAX } from './config.js';
-import { newFloorState, addEvent, updateWires } from './world.js';
-import { updateGuard, maxSuspicion } from './guard.js';
-import { updateCameras, updateLaser } from './camera.js';
+import { LEVELS, TOTAL_SHARDS } from './config.js';
+import { newWorld, tickWorldTimers, pushEvent, showToast, checkTripwires, checkLaser } from './world.js';
+import { makeGuards, updateGuards, alertAllGuards, maxSuspicion } from './guard.js';
+import { makeCameras, updateCameras, tripLaser } from './camera.js';
 import {
-  newPlayer, updatePlayer, throwCoin, updateCoins,
-  dropSmoke, updateSmokes, douseLamp, updateShards,
-  atExit, completeFloor, respawnAfterCatch, updateNearMiss,
-  isRunning,
+  movePlayer, throwCoin, updateCoins, dropSmoke, douseLamp, pickupShards,
+  exitReached, awardFloorClear, respawn, shardsLeft,
 } from './player.js';
 import { createInput } from './input.js';
-import { createAudio } from './audio.js';
-import { render } from './render.js';
-import { stageShot } from './shots.js';
+import { playSound, toggleMute } from './audio.js';
+import { drawScene } from './render.js';
+import { applyShot } from './shots.js';
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-const audio = createAudio();
+const statusEl = document.getElementById('status');
 
-const BEST_KEY = 'emberwatch-best';
-const params = new URLSearchParams(window.location.search);
+const game = {
+  screen: 'title', // title | card | play | paused | caught | gameover | win
+  state: null,
+  bestScore: 0,
+  lootBefore: 0,
+  campaignDone: false,
+  cardTimer: 0,
+  caughtTimer: 0,
+  ghostAwarded: false,
+};
+try { game.bestScore = Number(localStorage.getItem('emberwatch-best') || 0) || 0; } catch { game.bestScore = 0; }
 
-function loadBest() {
-  try {
-    return parseInt(window.localStorage.getItem(BEST_KEY) || '0', 10) || 0;
-  } catch (e) {
-    return 0;
-  }
-}
-
-function saveBest(v) {
-  try { window.localStorage.setItem(BEST_KEY, String(v)); } catch (e) { /* abaikan */ }
-}
-
-// ---------- game ----------
-
-function createGame() {
-  const state = newFloorState(0, null);
-  state.best = loadBest();
-  const player = newPlayer(state.floor);
-  return {
-    state,
-    player,
-    screen: 'title', // title | night | playing | paused | win | over
-    nightT: 0,
-    ghostAwarded: false,
-    muted: false,
-  };
-}
-
-let game = createGame();
-
-function startFloor(idx, carry) {
-  const state = newFloorState(idx, carry);
-  state.best = game.state.best;
+function loadFloor(index, carry) {
+  const state = newWorld(index);
+  state.score = carry.score;
+  state.take = carry.take;
+  state.lives = carry.lives;
+  state.closeCalls = carry.closeCalls;
+  state.spotted = carry.spotted;
+  state.nearMissPct = carry.nearMissPct;
+  state.bestScore = game.bestScore;
+  const guards = makeGuards(state.floor, index);
+  const cameras = makeCameras(state.floor);
+  state._guards = guards;
+  state._cameras = cameras;
+  state.dt = 0;
   game.state = state;
-  game.player = newPlayer(state.floor);
-  game.screen = 'night';
-  game.nightT = NIGHT_CARD_TIME;
-  if (idx > 0) {
-    addEvent(state, 'Night ' + state.floor.night + ' — ' + state.floor.name.toLowerCase() + '.');
+  game.lootBefore = carry.lootBefore;
+  if (index === 0) pushEvent(state, 'The depot hums. All quiet.');
+  else if (index === 1) pushEvent(state, 'The gallery sleeps. Tread.');
+  else pushEvent(state, 'The vault door stands open.');
+  return state;
+}
+
+function freshGame() {
+  game.lootBefore = 0;
+  game.campaignDone = false;
+  game.ghostAwarded = false;
+  loadFloor(0, { score: 0, take: 0, lives: 3, closeCalls: 0, spotted: 0, nearMissPct: null, lootBefore: 0 });
+  game.screen = 'title';
+}
+
+function saveBest() {
+  if (game.state.score > game.bestScore) {
+    game.bestScore = game.state.score;
+    try { localStorage.setItem('emberwatch-best', String(game.bestScore)); } catch { /* storage unavailable */ }
+  }
+}
+
+function onCaught(g) {
+  const state = game.state;
+  playSound('caught');
+  state.lives -= 1;
+  saveBest();
+  if (state.lives <= 0) {
+    game.screen = 'gameover';
   } else {
-    addEvent(state, 'The depot hums. All quiet.');
+    game.screen = 'caught';
+    game.caughtTimer = 1.6;
   }
 }
 
-function startGame() {
-  game = createGame();
-  game.state.best = loadBest();
-  startFloor(0, null);
-}
+function onSpotted() { playSound('alarm'); }
+function onCamAlarm() { playSound('camAlarm'); }
 
-function winGame() {
-  if (!game.ghostAwarded && game.state.spotted === 0) {
-    game.state.score += GHOST_PTS;
-    game.ghostAwarded = true;
-  }
-  game.screen = 'win';
-  if (game.state.score > game.state.best) {
-    game.state.best = game.state.score;
-    saveBest(game.state.best);
-  }
-  audio.win();
-}
-
-// ---------- aksi ----------
-
-function onAction(kind, data) {
-  audio.unlock();
-  if (kind === 'mute') {
-    game.muted = audio.toggleMute();
-    return;
-  }
-  if (kind === 'restart') {
-    startGame();
-    return;
-  }
-  if (game.screen === 'title') {
-    if (kind === 'confirm') startGame();
-    return;
-  }
-  if (game.screen === 'win' || game.screen === 'over') {
-    if (kind === 'confirm') startGame();
-    return;
-  }
-  if (kind === 'pause') {
-    if (game.screen === 'playing') game.screen = 'paused';
-    else if (game.screen === 'paused') game.screen = 'playing';
-    return;
-  }
-  if (game.screen !== 'playing') return;
-  if (game.screen === 'night') return;
-  switch (kind) {
-    case 'click':
-      if (data && data.x < 1008 && data.y > 56) {
-        throwCoin(game.player, game.state, data.x, data.y, audio);
-      }
-      break;
-    case 'coin': {
-      const mx = input.mouse.inside ? input.mouse.x : game.player.x + 120;
-      const my = input.mouse.inside ? input.mouse.y : game.player.y;
-      throwCoin(game.player, game.state, mx, my, audio);
-      break;
+function floorCleared() {
+  const state = game.state;
+  awardFloorClear(state);
+  playSound('door');
+  game.lootBefore += state.floor.shards.length;
+  if (state.floorIndex >= 2) {
+    if (state.spotted === 0 && !game.ghostAwarded) {
+      state.score += 500;
+      game.ghostAwarded = true;
     }
-    case 'smoke':
-      dropSmoke(game.player, game.state, audio);
-      break;
-    case 'douse':
-      douseLamp(game.player, game.state, audio);
-      break;
+    game.campaignDone = true;
+    saveBest();
+    playSound('win');
+    game.screen = 'win';
+    return;
   }
+  const carry = {
+    score: state.score, take: state.take, lives: state.lives,
+    closeCalls: state.closeCalls, spotted: state.spotted,
+    nearMissPct: state.nearMissPct, lootBefore: game.lootBefore,
+  };
+  loadFloor(state.floorIndex + 1, carry);
+  game.screen = 'card';
+  game.cardTimer = 2.6;
 }
-
-const input = createInput(canvas, onAction);
-
-// Kanal perintah + debug berbasis DOM (untuk smoke test otomatis).
-// Dipakai karena window.__ember tidak terlihat dari konteks evaluate
-// Camoufox; event DOM dan div debug tetap terbagi.
-const debugMode = params.get('debug') === '1';
-const debugEl = document.getElementById('ember-debug');
-document.addEventListener('ember-cmd', (e) => {
-  // detail berupa string JSON (objek antar-realm ditolak Firefox).
-  let d = {};
-  try { d = JSON.parse((e && e.detail) || '{}'); } catch (err) { d = {}; }
-  if (d.cmd === 'teleport') {
-    game.player.x = d.x; game.player.y = d.y;
-  } else if (d.cmd === 'start') {
-    if (game.screen === 'title') startGame();
-  } else if (d.cmd === 'skipNight') {
-    game.nightT = 0; game.screen = 'playing';
-  } else if (d.cmd === 'setFloor') {
-    const carry = {
-      score: game.state.score, take: game.state.take, lootTotal: game.state.lootTotal,
-      spotted: game.state.spotted, closeCalls: game.state.closeCalls,
-      lives: game.state.lives, totalTime: game.state.totalTime,
-      nightDone: game.state.nightDone.slice(), events: game.state.events.slice(),
-    };
-    startFloor(d.floor, carry);
-    game.nightT = 0;
-    game.screen = 'playing';
-  }
-});
-
-function debugSnapshot() {
-  const s = game.state;
-  return JSON.stringify({
-    screen: game.screen,
-    time: s.totalTime + s.time,
-    score: s.score,
-    take: s.take,
-    loot: s.lootTotal,
-    coins: s.coins,
-    smokesLeft: s.smokesLeft,
-    lamps: s.lampsOn.length,
-    lives: s.lives,
-    closeCalls: s.closeCalls,
-    spotted: s.spotted,
-    px: Math.round(game.player.x),
-    py: Math.round(game.player.y),
-    camAlert: s.cameras.length ? Math.max(...s.cameras.map((c) => c.alert)) : 0,
-    laserTripped: s.laser ? s.laser.tripped : false,
-    maxSusp: maxSuspicion(s),
-    toast: s.toast,
-    nearMissPct: s.nearMissPct,
-    floorIdx: s.floorIdx,
-    exitOpen: s.shards.every((sh) => sh.got),
-    shardsLeft: s.shards.filter((sh) => !sh.got).length,
-  });
-}
-
-// ---------- update ----------
 
 function update(dt) {
-  const { state, player } = game;
-  if (game.screen === 'night') {
-    game.nightT -= dt;
-    if (game.nightT <= 0) game.screen = 'playing';
+  const state = game.state;
+  state.dt = dt;
+  if (game.screen === 'card') {
+    game.cardTimer -= dt;
+    if (game.cardTimer <= 0) game.screen = 'play';
     return;
   }
-  if (game.screen !== 'playing') return;
-
-  state.time += dt;
-  if (state.caughtFlash > 0) state.caughtFlash -= dt;
-  if (state.toastT > 0) {
-    state.toastT -= dt;
-    if (state.toastT <= 0) state.toast = null;
-  }
-  if (state.coinNoiseT > 0) state.coinNoiseT -= dt;
-
-  // Ripples menua
-  for (let i = state.ripples.length - 1; i >= 0; i--) {
-    const r = state.ripples[i];
-    r.t += dt;
-    if (r.t >= r.ttl) state.ripples.splice(i, 1);
-  }
-
-  updatePlayer(player, input, state, dt, audio);
-  updateCoins(state, dt, audio);
-  updateSmokes(state, dt);
-
-  const pInfo = { x: player.x, y: player.y, running: isRunning(player) };
-  let caught = null;
-  for (const g of state.guards) {
-    updateGuard(g, state, pInfo, dt, (gg) => { caught = gg; }, audio);
-    if (caught) break;
-  }
-  if (caught) {
-    respawnAfterCatch(state, player, audio);
-    if (state.over) game.screen = 'over';
+  if (game.screen === 'caught') {
+    game.caughtTimer -= dt;
+    if (game.caughtTimer <= 0) {
+      respawn(state, state._guards);
+      game.screen = 'play';
+    }
     return;
   }
+  if (game.screen !== 'play') return;
 
-  updateCameras(state, pInfo, dt, audio);
-  updateLaser(state, pInfo, dt, audio);
-  updateNearMiss(state, audio);
-  updateShards(player, state, audio);
+  // Mouse click = throw a coin.
+  if (input.click) {
+    const c = input.click;
+    input.click = null;
+    if (c.x < 1080) throwCoin(state, state._guards, c.x, c.y, playSound);
+  }
+  movePlayer(state, input, dt);
+  updateCoins(state, state._guards, playSound);
+  pickupShards(state, playSound);
+  updateGuards(state, state._guards, dt, onCaught, onSpotted);
+  if (game.screen !== 'play') return; // caught during guard update
+  updateCameras(state, state._cameras, state._guards, onCamAlarm);
+  const wire = checkTripwires(state);
+  if (wire >= 0) {
+    const w = state.wires[wire];
+    alertAllGuards(state, state._guards, (w.a[0] + w.b[0]) / 2, (w.a[1] + w.b[1]) / 2, 25);
+    pushEvent(state, 'Tripwire tripped! Hide!');
+    showToast(state, 'TRIPWIRE!');
+    playSound('wire');
+  }
+  if (checkLaser(state)) {
+    tripLaser(state, state._guards, () => playSound('laser'));
+  }
+  tickWorldTimers(state, dt);
+  if (exitReached(state)) floorCleared();
+  if (statusEl) {
+    statusEl.textContent = `Night ${state.floorIndex + 1} · ${state.floor.name} · Score ${state.score} · Take $${state.take} · Shards left ${shardsLeft(state)}`;
+  }
+}
 
-  // Tripwire (bunyi tajam saat terpicu)
-  const wiresBefore = state.wires.map((w) => w.cooldown);
-  updateWires(state, player.x, player.y, dt);
-  state.wires.forEach((w, i) => {
-    if (w.cooldown > 0 && wiresBefore[i] <= 0) audio.tripwire();
-  });
-
-  // Exit
-  if (!state.floorDone && atExit(player, state)) {
-    // Pintu terkunci sampai semua shard dipungut.
-    const left = state.shards.filter((s) => !s.got).length;
-    if (left === 0) {
-      completeFloor(state);
-      state.totalTime += state.time;
-      if (state.floorIdx === 2) {
-        winGame();
-      } else {
-        const carry = {
-          score: state.score, take: state.take, lootTotal: state.lootTotal,
-          spotted: state.spotted, closeCalls: state.closeCalls,
-          lives: state.lives, totalTime: state.totalTime,
-          nightDone: state.nightDone.slice(), events: state.events.slice(),
-        };
-        startFloor(state.floorIdx + 1, carry);
-      }
+function handleAction(action) {
+  const state = game.state;
+  if (action === 'confirm') {
+    if (game.screen === 'title') { game.screen = 'card'; game.cardTimer = 2.6; }
+    else if (game.screen === 'caught') { respawn(state, state._guards); game.screen = 'play'; }
+    else if (game.screen === 'gameover' || game.screen === 'win') freshGame();
+  } else if (action === 'pause') {
+    if (game.screen === 'play') game.screen = 'paused';
+    else if (game.screen === 'paused') game.screen = 'play';
+  } else if (action === 'restart') {
+    freshGame();
+  } else if (action === 'mute') {
+    toggleMute();
+  } else if (game.screen === 'play') {
+    if (action === 'smoke') dropSmoke(state, playSound);
+    else if (action === 'douse') douseLamp(state, playSound);
+    else if (action === 'coinKey') {
+      const p = state.player;
+      throwCoin(state, state._guards, p.x + Math.cos(p.facing) * 150, p.y + Math.sin(p.facing) * 150, playSound);
     }
   }
 }
 
-// ---------- loop fixed-step ----------
+const input = createInput(canvas, handleAction);
 
-let last = performance.now();
-let acc = 0;
-const STEP = 1 / 60;
+freshGame();
+window.__emberwatch = game; // test hook for headless smoke tests
 
-function frame(now) {
-  const dt = Math.min(0.1, (now - last) / 1000);
-  last = now;
-  acc += dt;
-  while (acc >= STEP) {
-    update(STEP);
-    acc -= STEP;
-  }
-  render(ctx, game);
-  if (debugMode && debugEl) debugEl.textContent = debugSnapshot();
-  requestAnimationFrame(frame);
-}
-
-// ---------- mode screenshot staged ----------
-
-const shotName = params.get('shot');
-if (shotName) {
-  const staged = stageShot(shotName);
-  if (staged) {
-    game = staged;
-    render(ctx, game);
-    render(ctx, game); // dua frame seperti spec
-    document.documentElement.dataset.shotReady = '1';
-  }
+// Shot mode: stage one scene, draw two frames, flag ready. No loop.
+const params = new URLSearchParams(location.search);
+const shot = params.get('shot');
+if (shot) {
+  applyShot(game, shot, loadFloor);
+  game.screen = 'play';
+  drawScene(ctx, game);
+  drawScene(ctx, game);
+  document.documentElement.dataset.shotReady = '1';
 } else {
-  // Handle debug untuk smoke test (bukan bagian gameplay).
-  window.__ember = {
-    game: () => game,
-    state: () => game.state,
-    player: () => game.player,
-    start: () => { if (game.screen === 'title') startGame(); },
-    teleport: (x, y) => { game.player.x = x; game.player.y = y; },
-    setFloor: (i) => {
-      const carry = {
-        score: game.state.score, take: game.state.take, lootTotal: game.state.lootTotal,
-        spotted: game.state.spotted, closeCalls: game.state.closeCalls,
-        lives: game.state.lives, totalTime: game.state.totalTime,
-        nightDone: game.state.nightDone.slice(), events: game.state.events.slice(),
-      };
-      startFloor(i, carry);
-      game.nightT = 0;
-      game.screen = 'playing';
-    },
-    skipNight: () => { game.nightT = 0; game.screen = 'playing'; },
-  };
-  render(ctx, game);
+  let last = performance.now();
+  let acc = 0;
+  function frame(now) {
+    const dt = Math.min(0.1, (now - last) / 1000);
+    last = now;
+    acc += dt;
+    const step = 1 / 60;
+    let n = 0;
+    while (acc >= step && n < 5) {
+      update(step);
+      acc -= step;
+      n++;
+    }
+    drawScene(ctx, game);
+    requestAnimationFrame(frame);
+  }
   requestAnimationFrame(frame);
 }

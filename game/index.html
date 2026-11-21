@@ -5,16 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Emberwatch: Night Shift</title>
 <style>
-  html, body { margin: 0; padding: 0; background: #05080f; }
-  body { display: flex; flex-direction: column; align-items: center; font-family: sans-serif; }
-  canvas { display: block; width: 1280px; height: 720px; max-width: 100vw; }
-  #status { color: #8fa3c8; font-size: 12px; padding: 6px 10px; max-width: 1280px; }
+  body { margin: 0; background: #070b14; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  canvas { display: block; width: 1280px; height: 720px; max-width: 100vw; max-height: 100vh; }
+  #status { position: absolute; left: -9999px; }
 </style>
 </head>
 <body>
-<canvas id="game" width="1280" height="720" aria-label="Emberwatch: Night Shift — a top-down stealth game. You are Wren, a shadow courier. Pocket every ember shard, avoid guards, cameras, tripwires and lasers, then reach the green EXIT unseen."></canvas>
-<p id="status">EMBERWATCH: Night Shift — WASD move, SHIFT sneak, CLICK throw a coin, Q smoke, E douse a lamp, P pause, M mute, R restart.</p>
-<div id="ember-debug" style="display:none" aria-hidden="true"></div>
+<canvas id="game" width="1280" height="720" role="img" aria-label="Emberwatch: Night Shift — a top-down stealth game. You are Wren, slipping past guards and cameras to pocket ember shards and reach the exit unseen."></canvas>
+<p id="status" aria-live="polite">Emberwatch: Night Shift. Press Enter to begin.</p>
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>

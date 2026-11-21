@@ -1,37 +1,38 @@
-// EMBERWATCH: Night Shift — main.ts
-// Program hand-in: salin game/ + screenshots/ dari repo ke direktori output,
-// lalu tulis dossier.json memakai buildDossier dari vendor/makefun-game.ts.
-// Node 22 stdlib saja. Deterministik: dua kali jalan menulis byte yang sama.
-//
-// ATURAN KERAS: jangan pernah menghapus direktori output itu sendiri
-// (grader melakukan bind-mount ke sana). Pola yang dipakai: buat direktori
-// output kalau belum ada, baca daftar isinya, hapus HANYA tiap isi di
-// dalamnya satu per satu, lalu salin game/ + screenshots/ dan tulis dossier.
+// main.ts — hand-in program: copies game/ and screenshots/ into the
+// output directory and writes dossier.json with buildDossier.
+// Never deletes the output directory itself (the grader bind-mounts it):
+// only its contents are removed, one entry at a time.
 
 import { buildDossier } from './vendor/makefun-game.ts';
 import {
-  mkdirSync, readdirSync, rmSync, cpSync, writeFileSync, existsSync,
+  mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const repoRoot = fileURLToPath(new URL('.', import.meta.url));
 const outDir = process.env.MAKEFUN_OUTPUT_DIR || '/output';
 
-// Hapus isi direktori output satu per satu — TIDAK PERNAH direktori itu sendiri.
-mkdirSync(outDir, { recursive: true });
-for (const entry of readdirSync(outDir)) {
-  rmSync(join(outDir, entry), { recursive: true, force: true });
+function clearContents(dir: string): void {
+  for (const entry of readdirSync(dir)) {
+    rmSync(join(dir, entry), { recursive: true, force: true });
+  }
 }
 
-const gameSrc = join(repoRoot, 'game');
-const shotsSrc = join(repoRoot, 'screenshots');
-if (!existsSync(gameSrc)) throw new Error('main.ts: game/ tidak ditemukan di ' + repoRoot);
-if (!existsSync(shotsSrc)) throw new Error('main.ts: screenshots/ tidak ditemukan di ' + repoRoot);
+function copyTree(src: string, dest: string): void {
+  mkdirSync(dest, { recursive: true });
+  for (const entry of readdirSync(src, { withFileTypes: true })) {
+    const from = join(src, entry.name);
+    const to = join(dest, entry.name);
+    if (entry.isDirectory()) copyTree(from, to);
+    else if (entry.isFile()) {
+      writeFileSync(to, readFileSync(from));
+    }
+  }
+}
 
-cpSync(gameSrc, join(outDir, 'game'), { recursive: true });
-cpSync(shotsSrc, join(outDir, 'screenshots'), { recursive: true });
-
+mkdirSync(outDir, { recursive: true });
+clearContents(outDir);
+copyTree('game', join(outDir, 'game'));
+copyTree('screenshots', join(outDir, 'screenshots'));
 const dossier = buildDossier(outDir, {
   text_max_bytes: 163840,
   screenshots: { max: 4, max_bytes: 262144 },
@@ -40,4 +41,4 @@ const dossier = buildDossier(outDir, {
   game_path_max_bytes: 1000,
 });
 writeFileSync(join(outDir, 'dossier.json'), dossier);
-console.log('wrote ' + join(outDir, 'dossier.json') + ' (' + dossier.length + ' bytes)');
+console.log(`wrote ${join(outDir, 'dossier.json')} (${dossier.length} bytes)`);

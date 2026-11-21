@@ -1,77 +1,44 @@
-// EMBERWATCH: Night Shift — input.js
-// Keyboard + mouse, aksi edge-triggered (sekali per tekan).
+// input.js — keyboard + mouse, edge-triggered actions.
 
 export function createInput(canvas, onAction) {
   const keys = {};
   const input = {
-    keys,
-    dx: 0, dy: 0, sneak: false,
-    mouse: { x: 0, y: 0, inside: false },
-    consumeClick: null, // {x, y} klik yang belum diproses
+    up: false, down: false, left: false, right: false,
+    sneak: false, click: null, // {x, y} in canvas coords, consumed by main
   };
-
-  function recompute() {
-    let dx = 0, dy = 0;
-    if (keys['KeyA'] || keys['ArrowLeft']) dx -= 1;
-    if (keys['KeyD'] || keys['ArrowRight']) dx += 1;
-    if (keys['KeyW'] || keys['ArrowUp']) dy -= 1;
-    if (keys['KeyS'] || keys['ArrowDown']) dy += 1;
-    input.dx = dx;
-    input.dy = dy;
-    input.sneak = !!(keys['ShiftLeft'] || keys['ShiftRight']);
-  }
-
-  function edge(code, fn) {
-    if (!keys[code]) {
-      keys[code] = true;
-      fn();
-    }
-  }
-
-  window.addEventListener('keydown', (e) => {
-    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
+  const KEYMAP = {
+    KeyW: 'up', ArrowUp: 'up',
+    KeyS: 'down', ArrowDown: 'down',
+    KeyA: 'left', ArrowLeft: 'left',
+    KeyD: 'right', ArrowRight: 'right',
+    ShiftLeft: 'sneak', ShiftRight: 'sneak',
+  };
+  function keydown(e) {
+    if (KEYMAP[e.code]) {
+      input[KEYMAP[e.code]] = true;
       e.preventDefault();
+      return;
     }
-    if (e.repeat) { recompute(); return; }
-    switch (e.code) {
-      case 'Enter':
-      case 'Space': edge(e.code, () => onAction('confirm')); break;
-      case 'KeyP':
-      case 'Escape': edge(e.code, () => onAction('pause')); break;
-      case 'KeyR': edge(e.code, () => onAction('restart')); break;
-      case 'KeyM': edge(e.code, () => onAction('mute')); break;
-      case 'KeyQ': edge(e.code, () => onAction('smoke')); break;
-      case 'KeyE': edge(e.code, () => onAction('douse')); break;
-      case 'KeyC': edge(e.code, () => onAction('coin')); break;
-      default: keys[e.code] = true; break;
-    }
-    recompute();
-  });
-
-  window.addEventListener('keyup', (e) => {
-    keys[e.code] = false;
-    recompute();
-  });
-
-  canvas.addEventListener('mousemove', (e) => {
+    if (e.repeat) return;
+    if (e.code === 'Enter' || e.code === 'Space') { onAction('confirm'); e.preventDefault(); }
+    else if (e.code === 'KeyQ') onAction('smoke');
+    else if (e.code === 'KeyE') onAction('douse');
+    else if (e.code === 'KeyC') onAction('coinKey');
+    else if (e.code === 'KeyP' || e.code === 'Escape') onAction('pause');
+    else if (e.code === 'KeyR') onAction('restart');
+    else if (e.code === 'KeyM') onAction('mute');
+  }
+  function keyup(e) {
+    if (KEYMAP[e.code]) input[KEYMAP[e.code]] = false;
+  }
+  function mousedown(e) {
     const r = canvas.getBoundingClientRect();
-    input.mouse.x = (e.clientX - r.left) * (canvas.width / r.width);
-    input.mouse.y = (e.clientY - r.top) * (canvas.height / r.height);
-    input.mouse.inside = true;
-  });
-
-  canvas.addEventListener('mousedown', (e) => {
-    const r = canvas.getBoundingClientRect();
-    const x = (e.clientX - r.left) * (canvas.width / r.width);
-    const y = (e.clientY - r.top) * (canvas.height / r.height);
-    input.consumeClick = { x, y };
-    onAction('click', { x, y });
-  });
-
-  window.addEventListener('blur', () => {
-    for (const k of Object.keys(keys)) keys[k] = false;
-    recompute();
-  });
-
+    const sx = canvas.width / r.width;
+    const sy = canvas.height / r.height;
+    input.click = { x: (e.clientX - r.left) * sx, y: (e.clientY - r.top) * sy };
+  }
+  window.addEventListener('keydown', keydown);
+  window.addEventListener('keyup', keyup);
+  canvas.addEventListener('mousedown', mousedown);
   return input;
 }
