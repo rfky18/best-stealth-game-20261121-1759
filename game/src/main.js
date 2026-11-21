@@ -1,285 +1,238 @@
-// Boot and the one loop: input is read every frame, the world advances in
-// fixed 1/60 s steps (several in a slow frame, none in a fast one), and the
-// renderer paints what is there. The game moves between four screens:
-// title, play, paused and game over — and between the depot, the gallery
-// and the vault, with a level card in between. Slip out unseen and the
-// GHOST bonus lands once, at the win.
-//
-// ?shot=cover|nearmiss|smoke|exit (with &seed=N) stages that scene
-// instead of running the loop, paints it twice and sets
-// documentElement.dataset.shotReady for a screenshot.
-import { BEST_KEY, LEVELS, SCORE } from './config.js';
-import { createWorld, loadLevel, pushEvent, resetWorld } from './world.js';
-import { updateGuard, guardCaughtPlayer } from './guard.js';
+// Boot, the fixed-step loop, screen flow, the one-time GHOST bonus,
+// and the best score in local storage.
+
 import {
-  updatePlayer, updateCoin, updateEffects, respawnPlayer,
+  VIEW_W, VIEW_H, FLOORS, SCORE_GHOST, FLOOR_CARD_TIME,
+  CAUGHT_FLASH_TIME, TOTAL_SHARDS,
+} from './config.js';
+import { freshState, loadFloor, addEvent } from './world.js';
+import { tickGuard } from './guard.js';
+import {
+  tickPlayer, tickGadgets, throwCoin, dropSmoke, douseLamp,
+  atExit, finishFloor, respawn,
 } from './player.js';
+import { createInput } from './input.js';
+import { createAudio } from './audio.js';
 import {
-  createKeys, createInput, takeAction, takeCoinTarget,
-  ACTION_CONFIRM, ACTION_PAUSE, ACTION_RESTART, ACTION_MUTE,
-  ACTION_TOSS, ACTION_SMOKE, ACTION_DOUSE,
-} from './input.js';
-import {
-  ensureAudio, toggleMute, playFootstep, playAlarm, playCoin, playShard,
-  playUnlock, playCaught, playSmoke, playDouse, playTripwire,
-} from './audio.js';
-import { createRenderer, SCREEN_TITLE, SCREEN_PLAY, SCREEN_PAUSED, SCREEN_OVER } from './render.js';
+  drawFloor, drawCones, drawGuards, drawWren, drawHUD, drawToast,
+  drawTitle, drawFloorCard, drawPaused, drawCaught, drawWin, drawGameOver,
+} from './render.js';
+import { drawPanel } from './panel.js';
 import { stageShot } from './shots.js';
 
-/** The longest frame the loop catches up on; a longer stall is dropped. */
-const MAX_FRAME = 0.25;
 const STEP = 1 / 60;
-/** How long the level card stays up between floors. */
-const LEVEL_CARD_SECONDS = 2.6;
+const BEST_KEY = 'emberwatch-best';
 
-const params = new URLSearchParams(window.location.search);
-const shot = params.get('shot');
-
-const canvas = document.getElementById('game');
-const status = document.getElementById('status');
-const world = createWorld();
-const renderer = createRenderer(canvas);
-const keys = createKeys();
-
-function readBest() {
+function loadBest() {
   try {
-    return Number.parseInt(window.localStorage.getItem(BEST_KEY) ?? '0', 10) || 0;
-  } catch {
+    return Number(window.localStorage.getItem(BEST_KEY)) || 0;
+  } catch (e) {
     return 0;
   }
 }
 
-function saveBest(value) {
+function saveBest(score) {
   try {
-    window.localStorage.setItem(BEST_KEY, String(value));
-  } catch {
-    // Storage can be off (private windows): the best score lasts one visit.
+    window.localStorage.setItem(BEST_KEY, String(score));
+  } catch (e) {
+    // Storage unavailable — the run still counts.
   }
 }
 
-/** Announce screen changes for screen readers. */
-function announce(message) {
-  status.textContent = message;
+function renderAll(ctx, state, now) {
+  ctx.clearRect(0, 0, VIEW_W, VIEW_H);
+  drawFloor(ctx, state, now);
+  drawCones(ctx, state);
+  drawGuards(ctx, state);
+  drawWren(ctx, state);
+  drawHUD(ctx, state);
+  drawPanel(ctx, state);
+  drawToast(ctx, state);
+  if (state.screen === 'title') drawTitle(ctx, state);
+  else if (state.screen === 'floorcard') drawFloorCard(ctx, state);
+  else if (state.screen === 'paused') drawPaused(ctx);
+  else if (state.screen === 'caught') drawCaught(ctx);
+  else if (state.screen === 'win') drawWin(ctx, state);
+  else if (state.screen === 'gameover') drawGameOver(ctx, state);
 }
 
-/** One fixed step of the living game: player, coin, then every guard. */
-function stepWorld(dt, sounds) {
-  const beforeShards = world.shardsTaken;
-  const beforeSmoke = world.smokeLeft;
-  const beforeLamps = world.lampsLive.length;
-  const wireCool = world.wires.map((wire) => wire.coolLeft);
-  const stepped = updatePlayer(world, keys, dt, sounds.tossAt, sounds.smoke, sounds.douse);
-  if (stepped) sounds.step(world.player.sneaking);
-  if (world.shardsTaken > beforeShards) {
-    sounds.shard();
-    if (world.shardsTaken >= LEVELS[world.levelIndex].shards.length) sounds.unlock();
+function startRun(state) {
+  const best = state.best;
+  const muted = state.muted;
+  const fresh = freshState();
+  fresh.best = best;
+  fresh.muted = muted;
+  Object.assign(state, fresh);
+  loadFloor(state);
+  state.screen = 'playing';
+}
+
+function tick(state, dt, sfx) {
+  state.time += dt;
+  if (state.toast) {
+    state.toast.left -= dt;
+    if (state.toast.left <= 0) state.toast = null;
   }
-  if (world.smokeLeft < beforeSmoke) {
-    sounds.smokeSound();
-    pushEvent(world, 'Smoke out — the cones go blind.');
+  for (const r of state.ripples) r.left -= dt;
+  state.ripples = state.ripples.filter((r) => r.left > 0);
+
+  tickPlayer(state, input.keys, dt, sfx);
+  tickGadgets(state, dt, sfx);
+  let caught = false;
+  for (const g of state.guards) {
+    if (tickGuard(g, state, dt, sfx) === 'caught') caught = true;
   }
-  if (world.lampsLive.length < beforeLamps) {
-    sounds.douseSound();
-    pushEvent(world, 'Lantern doused — the dark grows.');
+  if (caught) {
+    state.screen = 'caught';
+    state.caughtLeft = CAUGHT_FLASH_TIME;
+    if (sfx) sfx.caught();
+    return;
   }
-  for (let i = 0; i < world.wires.length; i++) {
-    if (wireCool[i] <= 0 && world.wires[i].coolLeft > 0) sounds.tripwire();
+  if (atExit(state)) {
+    const result = finishFloor(state);
+    if (result === 'win') {
+      if (state.spotted === 0 && !state.ghostAwarded) {
+        state.ghostAwarded = true;
+        state.score += SCORE_GHOST;
+        addEvent(state, 'GHOST bonus +500 — never spotted!');
+      }
+      if (state.score > state.best) {
+        state.best = state.score;
+        saveBest(state.score);
+      }
+      state.screen = 'win';
+    } else {
+      loadFloor(state);
+      state.screen = 'floorcard';
+      state.floorCardLeft = FLOOR_CARD_TIME;
+    }
   }
-  updateCoin(world, dt, sounds.coin);
-  updateEffects(world, dt);
-  for (let i = 0; i < world.guards.length; i++) {
-    updateGuard(world.guards[i], i, world, dt, sounds.alarm);
-  }
-  if (world.toastTimer > 0) world.toastTimer -= dt;
-  if (world.status === 'play') {
-    const caughtBy = guardCaughtPlayer(world);
-    if (caughtBy) {
-      sounds.caught();
-      world.lives -= 1;
-      if (world.lives <= 0) {
-        world.status = 'over';
-        world.statusTimer = 0;
-        announce('Caught. Game over.');
+}
+
+let input;
+
+function handleActions(state, sfx) {
+  for (const act of input.drain()) {
+    if (act === 'mute') {
+      state.muted = sfx.toggleMute();
+      continue;
+    }
+    if (act === 'restart') {
+      startRun(state);
+      continue;
+    }
+    if (state.screen === 'title') {
+      if (act === 'confirm') {
+        sfx.unlock();
+        startRun(state);
+      }
+      continue;
+    }
+    if (state.screen === 'paused') {
+      if (act === 'pause' || act === 'confirm') state.screen = 'playing';
+      continue;
+    }
+    if (state.screen === 'win' || state.screen === 'gameover') {
+      continue;
+    }
+    if (state.screen !== 'playing') continue;
+    if (act === 'pause') {
+      state.screen = 'paused';
+    } else if (act === 'coin') {
+      const p = state.player;
+      let tx;
+      let ty;
+      if (input.pendingCoin) {
+        tx = input.pendingCoin.x;
+        ty = input.pendingCoin.y;
+        input.pendingCoin = null;
+      } else if (input.mouse.inside) {
+        tx = input.mouse.x;
+        ty = input.mouse.y;
       } else {
-        world.status = 'caught';
-        world.statusTimer = 0;
-        announce(`Spotted by ${caughtBy.name}. ${world.lives} lanterns left.`);
+        tx = p.x + Math.cos(p.face) * 120;
+        ty = p.y + Math.sin(p.face) * 120;
       }
+      throwCoin(state, tx, ty, sfx);
+    } else if (act === 'smoke') {
+      dropSmoke(state, sfx);
+    } else if (act === 'douse') {
+      douseLamp(state, sfx);
+    } else if (act === 'confirm') {
+      sfx.unlock();
     }
   }
 }
 
-function runShot(name) {
-  const scene = stageShot(name, world);
-  let painted = 0;
-  function paint() {
-    renderer.draw(scene, SCREEN_PLAY, readBest());
-    painted += 1;
-    if (painted < 2) requestAnimationFrame(paint);
-    else {
-      window.__shotReady = true;
-      // A DOM flag too: some headless harnesses evaluate in a separate
-      // realm, where window properties set by page scripts are not visible.
-      document.documentElement.dataset.shotReady = '1';
-    }
-  }
-  requestAnimationFrame(paint);
-}
+function boot() {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const statusEl = document.getElementById('status');
+  const sfx = createAudio();
+  const state = freshState();
+  state.best = loadBest();
+  loadFloor(state);
 
-function runGame() {
-  const input = createInput(keys, canvas);
-  let screen = SCREEN_TITLE;
-  let best = readBest();
-  let ghostAwarded = false;
-  let accumulator = 0;
+  input = createInput(canvas, (x, y) => {
+    input.pendingCoin = { x, y };
+  });
+  input.pendingCoin = null;
+
+  const params = new URLSearchParams(window.location.search);
+  const shot = params.get('shot');
+  if (shot) {
+    stageShot(state, shot);
+    renderAll(ctx, state, state.time);
+    renderAll(ctx, state, state.time);
+    document.documentElement.dataset.shotReady = '1';
+    if (statusEl) {
+      statusEl.textContent = `Emberwatch — staged shot ${shot}. Level ${state.floor + 1}, score ${state.score}.`;
+    }
+    return;
+  }
+
   let last = performance.now();
-  let stepSounds = {
-    shard: playShard, unlock: playUnlock, alarm: playAlarm,
-    caught: playCaught, step: playFootstep, coin: playCoin,
-    smokeSound: playSmoke, douseSound: playDouse, tripwire: playTripwire,
-    tossAt: null, smokePressed: false, dousePressed: false,
-  };
+  let acc = 0;
+  let lastStatus = 0;
 
-  function startGame() {
-    resetWorld(world);
-    ghostAwarded = false;
-    takeCoinTarget(keys); // a click that started the game is not a coin toss
-    accumulator = 0;
-    screen = SCREEN_PLAY;
-    announce('Playing. Pocket 3 ember shards, then reach the exit unseen.');
-  }
-
-  function endToTitle() {
-    screen = SCREEN_TITLE;
-    announce('Emberwatch: Night Shift. Press Enter to begin.');
-  }
-
-  /** Where a C press tosses a coin: a short throw ahead of Wren. */
-  function tossAhead() {
-    const p = world.player;
-    return {
-      x: p.x + Math.cos(p.facing) * 170,
-      y: p.y + Math.sin(p.facing) * 170,
-    };
-  }
-
-  function frame(now) {
-    requestAnimationFrame(frame);
-    const elapsed = Math.min(MAX_FRAME, (now - last) / 1000);
-    last = now;
-
-    if (takeAction(keys, ACTION_MUTE)) {
-      ensureAudio();
-      const muted = toggleMute();
-      announce(muted ? 'Sound muted.' : 'Sound on.');
-    }
-    // Peek, don't consume: the confirm press is consumed below by the
-    // screen that acts on it (title starts the game on the same press).
-    if (keys.confirm) ensureAudio();
-
-    if (screen === SCREEN_TITLE) {
-      if (takeAction(keys, ACTION_CONFIRM)) startGame();
-      renderer.draw(world, SCREEN_TITLE, best);
-      return;
-    }
-
-    if (takeAction(keys, ACTION_PAUSE)) {
-      if (screen === SCREEN_PLAY) {
-        screen = SCREEN_PAUSED;
-        announce('Paused.');
-      } else if (screen === SCREEN_PAUSED) {
-        screen = SCREEN_PLAY;
-        announce('Playing.');
+  function frame(nowMs) {
+    const now = nowMs / 1000;
+    let delta = (nowMs - last) / 1000;
+    last = nowMs;
+    if (delta > 0.25) delta = 0.25;
+    acc += delta;
+    handleActions(state, sfx);
+    if (state.screen === 'playing') {
+      while (acc >= STEP) {
+        tick(state, STEP, sfx);
+        acc -= STEP;
+        if (state.screen !== 'playing') { acc = 0; break; }
       }
-    }
-    if (takeAction(keys, ACTION_RESTART)) {
-      if (screen === SCREEN_PLAY || screen === SCREEN_PAUSED || world.status !== 'play') {
-        startGame();
-        return;
-      }
-    }
-
-    if (screen === SCREEN_PAUSED) {
-      renderer.draw(world, SCREEN_PAUSED, best);
-      return;
-    }
-
-    // Caught is a beat, not a screen: two seconds, then Wren is back at
-    // the service door with one fewer lantern and the guards calming down.
-    if (world.status === 'caught') {
-      world.statusTimer += elapsed;
-      if (world.statusTimer > 2) {
-        respawnPlayer(world);
-        world.status = 'play';
-      }
-      renderer.draw(world, SCREEN_PLAY, best);
-      return;
-    }
-
-    // The level card: a beat between floors, then the next floor loads.
-    if (world.status === 'levelcard') {
-      world.statusTimer += elapsed;
-      if (world.statusTimer > LEVEL_CARD_SECONDS) {
-        loadLevel(world, world.levelIndex + 1);
-        world.status = 'play';
-        announce(`Level ${world.levelIndex + 1}: ${LEVELS[world.levelIndex].name}.`);
-      }
-      renderer.draw(world, SCREEN_PLAY, best);
-      return;
-    }
-
-    if (world.status === 'won') {
-      // The GHOST bonus lands once, the moment the night is won unseen.
-      if (!ghostAwarded) {
-        ghostAwarded = true;
-        if (world.spotted === 0) {
-          world.score += SCORE.ghost;
-          pushEvent(world, `GHOST BONUS +${SCORE.ghost} — never spotted!`);
+    } else if (state.screen === 'floorcard') {
+      state.floorCardLeft -= delta;
+      if (state.floorCardLeft <= 0) state.screen = 'playing';
+    } else if (state.screen === 'caught') {
+      state.caughtLeft -= delta;
+      if (state.caughtLeft <= 0) {
+        respawn(state);
+        state.screen = state.lives <= 0 ? 'gameover' : 'playing';
+        if (state.screen === 'gameover' && state.score > state.best) {
+          state.best = state.score;
+          saveBest(state.score);
         }
       }
-      if (!best || world.score > best) {
-        best = world.score;
-        saveBest(best);
-      }
-      renderer.draw(world, SCREEN_PLAY, best);
-      if (takeAction(keys, ACTION_CONFIRM)) endToTitle();
-      return;
+    } else {
+      acc = 0;
     }
-    if (world.status === 'over') {
-      renderer.draw(world, SCREEN_OVER, best);
-      if (takeAction(keys, ACTION_CONFIRM)) endToTitle();
-      return;
+    renderAll(ctx, state, now);
+    if (statusEl && now - lastStatus > 0.5) {
+      lastStatus = now;
+      statusEl.textContent = `Emberwatch: Night Shift — Level ${state.floor + 1} ${FLOORS[state.floor].name}, `
+        + `${state.shardsGot}/${TOTAL_SHARDS} shards, score ${state.score}, lives ${state.lives}.`;
     }
-
-    // One coin toss per click or C press, aimed at the clicked spot;
-    // one smoke bomb per Q press, one douse per E press.
-    stepSounds.tossAt = takeCoinTarget(keys);
-    if (takeAction(keys, ACTION_TOSS)) stepSounds.tossAt = tossAhead();
-    stepSounds.smokePressed = takeAction(keys, ACTION_SMOKE);
-    stepSounds.dousePressed = takeAction(keys, ACTION_DOUSE);
-
-    accumulator += elapsed;
-    while (accumulator >= STEP) {
-      accumulator -= STEP;
-      world.time += STEP;
-      stepWorld(STEP, {
-        ...stepSounds,
-        smoke: stepSounds.smokePressed,
-        douse: stepSounds.dousePressed,
-      });
-      stepSounds.tossAt = null;
-      stepSounds.smokePressed = false;
-      stepSounds.dousePressed = false;
-      if (world.player.caughtFlash > 0) {
-        world.player.caughtFlash = Math.max(0, world.player.caughtFlash - STEP);
-      }
-    }
-    renderer.draw(world, SCREEN_PLAY, best);
+    requestAnimationFrame(frame);
   }
-
-  announce('Emberwatch: Night Shift. Press Enter to begin.');
   requestAnimationFrame(frame);
 }
 
-if (shot) runShot(shot);
-else runGame();
+boot();

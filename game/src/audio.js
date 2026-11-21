@@ -1,122 +1,110 @@
-// All sound is synthesized with WebAudio: no audio files, no network.
-// Footsteps are short filtered ticks, the alarm is a two-tone siren blip,
-// a coin toss is a bright metallic clink, a shard pickup is a pluck, a
-// smoke bomb is a soft hiss, a doused lamp is a snuffed sigh, a tripped
-// wire is a sharp zap, and winning is a small rising arpeggio.
-let ctx = null;
-let muted = false;
+// All sound is synthesized with WebAudio — no audio files.
+// The context is created on the first user gesture.
 
-/** Create (or resume) the audio context on the first user gesture. */
-export function ensureAudio() {
-  try {
-    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
-    if (ctx.state === 'suspended') void ctx.resume();
-  } catch {
-    ctx = null;
+export function createAudio() {
+  let ctx = null;
+  let muted = false;
+  let noiseBuf = null;
+
+  function ensure() {
+    if (!ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      ctx = new AC();
+      const len = Math.floor(ctx.sampleRate * 0.6);
+      noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+      const data = noiseBuf.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    }
+    if (ctx.state === 'suspended') ctx.resume();
+    return ctx;
   }
-}
 
-export function toggleMute() {
-  muted = !muted;
-  return muted;
-}
-
-export function isMuted() {
-  return muted;
-}
-
-function tone(freq, dur, type, gainValue, when = 0) {
-  if (!ctx || muted) return;
-  try {
-    const t0 = ctx.currentTime + when;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = type;
-    osc.frequency.setValueAtTime(freq, t0);
-    gain.gain.setValueAtTime(0.0001, t0);
-    gain.gain.exponentialRampToValueAtTime(gainValue, t0 + 0.012);
-    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    osc.connect(gain).connect(ctx.destination);
-    osc.start(t0);
-    osc.stop(t0 + dur + 0.05);
-  } catch {
-    // Audio is decoration; a failure here never stops the game.
+  function tone(freq, dur, type, vol, when = 0, slideTo = 0) {
+    if (muted) return;
+    const c = ensure();
+    if (!c) return;
+    const t0 = c.currentTime + when;
+    const o = c.createOscillator();
+    const g = c.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t0);
+    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t0 + dur);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(vol, t0 + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g);
+    g.connect(c.destination);
+    o.start(t0);
+    o.stop(t0 + dur + 0.05);
   }
-}
 
-/** Filtered noise burst: a smoke hiss, a snuffed lamp, a tripped wire. */
-function noiseBurst(dur, gainValue, freq, when = 0) {
-  if (!ctx || muted) return;
-  try {
-    const t0 = ctx.currentTime + when;
-    const len = Math.max(1, Math.floor(ctx.sampleRate * dur));
-    const buffer = ctx.createBuffer(1, len, ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
-    const src = ctx.createBufferSource();
-    src.buffer = buffer;
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.frequency.value = freq;
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(gainValue, t0);
-    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    src.connect(filter).connect(gain).connect(ctx.destination);
+  function noise(dur, vol, filterFreq, when = 0) {
+    if (muted) return;
+    const c = ensure();
+    if (!c) return;
+    const t0 = c.currentTime + when;
+    const src = c.createBufferSource();
+    src.buffer = noiseBuf;
+    src.loop = true;
+    const f = c.createBiquadFilter();
+    f.type = 'lowpass';
+    f.frequency.value = filterFreq;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(vol, t0 + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    src.connect(f);
+    f.connect(g);
+    g.connect(c.destination);
     src.start(t0);
-  } catch {
-    // Audio is decoration; a failure here never stops the game.
+    src.stop(t0 + dur + 0.05);
   }
-}
 
-/** A soft footstep tick; pitch drops when sneaking. */
-export function playFootstep(sneaking) {
-  tone(sneaking ? 140 : 210, 0.07, 'triangle', sneaking ? 0.03 : 0.06);
-}
-
-/** The two-tone alarm when a guard breaks into a chase. */
-export function playAlarm() {
-  tone(620, 0.16, 'square', 0.05);
-  tone(830, 0.2, 'square', 0.05, 0.17);
-}
-
-/** The metallic clink of a tossed coin landing on stone. */
-export function playCoin() {
-  tone(2093, 0.09, 'sine', 0.06);
-  tone(2637, 0.14, 'sine', 0.04, 0.05);
-}
-
-/** Bright pluck when Wren pockets an ember shard. */
-export function playShard() {
-  tone(880, 0.12, 'sine', 0.07);
-  tone(1318, 0.18, 'sine', 0.05, 0.08);
-}
-
-/** The door unlocking once the last shard of a floor is pocketed. */
-export function playUnlock() {
-  tone(392, 0.12, 'sine', 0.06);
-  tone(523, 0.12, 'sine', 0.06, 0.1);
-  tone(659, 0.22, 'sine', 0.06, 0.2);
-}
-
-/** A low thud when a guard catches Wren. */
-export function playCaught() {
-  tone(110, 0.3, 'sawtooth', 0.08);
-  tone(82, 0.35, 'sawtooth', 0.07, 0.12);
-}
-
-/** The soft hiss of a smoke bomb going off at Wren's feet. */
-export function playSmoke() {
-  noiseBurst(0.5, 0.09, 900);
-}
-
-/** The snuffed sigh of a lamp going dark. */
-export function playDouse() {
-  noiseBurst(0.35, 0.07, 500);
-  tone(330, 0.25, 'sine', 0.04, 0.05);
-}
-
-/** The sharp zap of a tripwire being crossed. */
-export function playTripwire() {
-  tone(1244, 0.08, 'square', 0.06);
-  tone(932, 0.14, 'square', 0.05, 0.07);
+  return {
+    unlock() { ensure(); },
+    get muted() { return muted; },
+    toggleMute() {
+      muted = !muted;
+      return muted;
+    },
+    step(sneaking) {
+      tone(sneaking ? 90 : 120, 0.06, 'triangle', sneaking ? 0.05 : 0.09);
+    },
+    alarm() {
+      tone(660, 0.16, 'square', 0.12);
+      tone(880, 0.22, 'square', 0.12, 0.16);
+    },
+    coinThrow() {
+      tone(1200, 0.07, 'sine', 0.08);
+    },
+    coinLand() {
+      tone(1560, 0.09, 'sine', 0.14);
+      tone(2090, 0.14, 'sine', 0.12, 0.07);
+    },
+    shard() {
+      tone(880, 0.1, 'sine', 0.14);
+      tone(1318, 0.16, 'sine', 0.12, 0.08);
+    },
+    door() {
+      tone(523, 0.12, 'sine', 0.12);
+      tone(659, 0.12, 'sine', 0.12, 0.1);
+      tone(784, 0.2, 'sine', 0.12, 0.2);
+    },
+    caught() {
+      tone(220, 0.3, 'sawtooth', 0.14, 0, 110);
+      tone(165, 0.4, 'sawtooth', 0.14, 0.22, 82);
+    },
+    smoke() {
+      noise(0.5, 0.16, 900);
+    },
+    douse() {
+      noise(0.25, 0.12, 1400);
+      tone(520, 0.3, 'sine', 0.1, 0.05, 240);
+    },
+    tripwire() {
+      tone(1240, 0.09, 'square', 0.14);
+      tone(1240, 0.09, 'square', 0.14, 0.12);
+    },
+  };
 }

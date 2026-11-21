@@ -1,179 +1,172 @@
-// Wren, the shadow courier: WASD/arrows to move, Shift to sneak, click
-// (or C) to toss a coin, Q to drop a smoke bomb, R to douse a nearby
-// lamp. Sneaking is slower and quieter; running is fast but loud and easy
-// to spot. A tossed coin flies to the clicked spot and lands with a clink
-// every nearby guard walks over to check. Smoke blinds the cones for a
-// few seconds; a doused lamp stops giving Wren away for the rest of the
-// floor. Crossing a tripwire wakes the whole floor up.
-import { SCORE, TUNE } from './config.js';
+// Wren, the player: movement, coin throws, smoke bombs, dousing
+// lamps, picking up shards, scoring, the exit, and respawning.
+
 import {
-  distToSegment, exitRect, exitOpen, inLight, inShadow, inSmoke,
-  levelOf, resolveCircle,
+  FLOORS, WALK_SPEED, SNEAK_SPEED, PLAYER_R, COIN_THROW_MAX,
+  COIN_FLIGHT, COINS_PER_FLOOR, SMOKE_R, SMOKE_TIME, SMOKES_PER_FLOOR,
+  DOUSE_RANGE, PICKUP_R, SCORE_SHARD, SCORE_FLOOR,
+  clamp, dist,
+} from './config.js';
+import {
+  moveCircle, inSmoke, lampAt, exitOpen, addEvent, tripwireAt,
+  showToast,
 } from './world.js';
-import { hearCoin, tripWire } from './guard.js';
+import { guardsHearCoin, guardsTripwire, calmGuards } from './guard.js';
 
-/**
- * Move the player one frame from the held keys; returns true on a footstep.
- * `tossAt` is a clicked point (or null) — one toss per click, spent from
- * the floor's coin purse. `smoke` and `douse` are edge-triggered presses.
- */
-export function updatePlayer(world, keys, dt, tossAt, smoke, douse) {
-  const p = world.player;
-  if (world.status !== 'play') return false;
-
-  let dx = 0;
-  let dy = 0;
-  if (keys.left) dx -= 1;
-  if (keys.right) dx += 1;
-  if (keys.up) dy -= 1;
-  if (keys.down) dy += 1;
-  const len = Math.hypot(dx, dy);
+// Move Wren for one fixed step. `keys` is the live key set.
+export function tickPlayer(state, keys, dt, sfx) {
+  const p = state.player;
+  let mx = 0;
+  let my = 0;
+  if (keys.has('KeyA') || keys.has('ArrowLeft')) mx -= 1;
+  if (keys.has('KeyD') || keys.has('ArrowRight')) mx += 1;
+  if (keys.has('KeyW') || keys.has('ArrowUp')) my -= 1;
+  if (keys.has('KeyS') || keys.has('ArrowDown')) my += 1;
+  p.sneaking = keys.has('ShiftLeft') || keys.has('ShiftRight');
+  const len = Math.hypot(mx, my);
   p.moving = len > 0;
-  p.sneaking = Boolean(keys.sneak) || len === 0;
-
-  if (len > 0) {
-    const speed = p.sneaking ? TUNE.playerSneak : TUNE.playerWalk;
-    const level = levelOf(world);
-    const fixed = resolveCircle(
-      level,
-      p.x + (dx / len) * speed * dt,
-      p.y + (dy / len) * speed * dt,
-      TUNE.playerRadius,
-    );
-    p.x = fixed.x;
-    p.y = fixed.y;
-    p.facing = Math.atan2(dy, dx);
+  p.running = p.moving && !p.sneaking;
+  if (p.moving) {
+    const speed = p.sneaking ? SNEAK_SPEED : WALK_SPEED;
+    const nx = (mx / len) * speed * dt;
+    const ny = (my / len) * speed * dt;
+    const moved = moveCircle(state, p.x, p.y, PLAYER_R, nx, ny);
+    p.x = moved.x;
+    p.y = moved.y;
+    p.face = Math.atan2(ny, nx);
+    // Footsteps: a soft tick and a small ripple, faster when running.
+    p.stepAt -= dt;
+    if (p.stepAt <= 0) {
+      if (sfx) sfx.step(p.sneaking);
+      state.ripples.push({
+        x: p.x, y: p.y, r: 4, max: p.sneaking ? 14 : 22,
+        left: 0.8, total: 0.8, color: '#2dd4bf',
+      });
+      p.stepAt = p.sneaking ? 0.55 : 0.34;
+    }
   }
 
-  p.hidden = inShadow(world, p.x, p.y);
-  p.lit = inLight(world, p.x, p.y);
-  p.smoked = inSmoke(world, p.x, p.y);
-
-  // Toss a coin: it arcs to the clicked spot (clamped to throwing range)
-  // and the clink pulls nearby guards off their patrol.
-  if (tossAt && world.coins > 0 && !world.thrownCoin) {
-    const tx = tossAt.x - p.x;
-    const ty = tossAt.y - p.y;
-    const dist = Math.hypot(tx, ty);
-    const reach = Math.min(dist, TUNE.coinRange);
-    const ux = dist > 0 ? tx / dist : Math.cos(p.facing);
-    const uy = dist > 0 ? ty / dist : Math.sin(p.facing);
-    world.coins -= 1;
-    world.thrownCoin = {
-      x0: p.x, y0: p.y,
-      x1: p.x + ux * reach, y1: p.y + uy * reach,
-      t: 0,
-    };
+  // Tripwires underfoot.
+  const wireIdx = tripwireAt(state, p.x, p.y);
+  if (wireIdx >= 0) {
+    const wire = FLOORS[state.floor].wires[wireIdx];
+    state.wiresCool[wireIdx] = 8;
+    guardsTripwire(state, wire);
+    showToast(state, 'TRIPWIRE!');
+    if (sfx) sfx.tripwire();
   }
 
-  // Drop a smoke bomb at Wren's feet: the cloud hangs for a few seconds
-  // and no guard can see through it.
-  if (smoke && world.smokeLeft > 0) {
-    world.smokeLeft -= 1;
-    world.smoke.push({ x: p.x, y: p.y, left: TUNE.smokeSeconds });
-  }
-
-  // Douse the nearest burning lamp in reach: its light pool goes dark
-  // for the rest of the floor, and the dark grows a little wider.
-  if (douse) {
-    let best = null;
-    let bestDist = TUNE.douseRange;
-    for (const lamp of world.lampsLive) {
-      const d = Math.hypot(p.x - lamp.x, p.y - lamp.y);
-      if (d < bestDist) {
-        best = lamp;
-        bestDist = d;
+  // Shards: walk over one to pocket it.
+  const floor = FLOORS[state.floor];
+  for (let i = 0; i < floor.shards.length; i++) {
+    if (state.shardsTaken.has(i)) continue;
+    const s = floor.shards[i];
+    if (dist(p.x, p.y, s.x, s.y) <= PICKUP_R) {
+      state.shardsTaken.add(i);
+      state.shardsGot += 1;
+      state.score += SCORE_SHARD;
+      addEvent(state, 'Ember shard pocketed.');
+      if (sfx) sfx.shard();
+      if (exitOpen(state)) {
+        addEvent(state, 'The door stands open. Go!');
+        if (sfx) sfx.door();
       }
     }
-    if (best) {
-      world.lampsLive = world.lampsLive.filter((lamp) => lamp !== best);
-    }
-  }
-
-  // Tripwires: step on the line and the whole floor gets curious. A wire
-  // that just fired needs a few seconds before it can fire again.
-  for (const wire of world.wires) {
-    if (wire.coolLeft > 0) continue;
-    if (distToSegment(p.x, p.y, wire.x1, wire.y1, wire.x2, wire.y2) < 14) {
-      wire.coolLeft = TUNE.tripwireRearmSec;
-      tripWire(world, wire);
-    }
-  }
-
-  // Footstep ripples: loud and wide while running, faint while sneaking.
-  p.rippleTimer -= dt;
-  const stride = p.sneaking ? 0.5 : 0.3;
-  let stepped = false;
-  if (p.moving && p.rippleTimer <= 0) {
-    p.rippleTimer = stride;
-    p.ripples.push({ x: p.x, y: p.y + 10, age: 0 });
-    stepped = true;
-  }
-  for (const r of p.ripples) r.age += dt;
-  p.ripples = p.ripples.filter((r) => r.age < 0.8);
-
-  // Shards: walk over one to pocket it — each one is 100 points.
-  for (const shard of world.shards) {
-    if (!shard.taken && Math.hypot(p.x - shard.x, p.y - shard.y) < 26) {
-      shard.taken = true;
-      world.shardsTaken += 1;
-      world.totalTaken += 1;
-      world.score += SCORE.shard;
-    }
-  }
-
-  // The exit only counts once it stands open (all shards pocketed).
-  if (exitOpen(world)) {
-    const e = exitRect(world);
-    if (p.x + 12 > e.x && p.x - 12 < e.x + e.w && p.y + 12 > e.y && p.y - 12 < e.y + e.h) {
-      world.score += SCORE.levelClear;
-      world.status = world.levelIndex + 1 < 3 ? 'levelcard' : 'won';
-      world.statusTimer = 0;
-    }
-  }
-  return stepped;
-}
-
-/** Advance a thrown coin; on landing, ring the ping and alert the guards. */
-export function updateCoin(world, dt, onClink) {
-  const coin = world.thrownCoin;
-  if (!coin) return;
-  coin.t += dt / 0.35;
-  if (coin.t < 1) return;
-  world.thrownCoin = null;
-  world.landedCoins.push({ x: coin.x1, y: coin.y1, age: 0 });
-  if (world.landedCoins.length > 3) world.landedCoins.shift();
-  world.pings.push({ x: coin.x1, y: coin.y1, age: 0 });
-  hearCoin(world, coin.x1, coin.y1);
-  if (onClink) onClink();
-}
-
-/** Age the coin pings, the landed coins, the smoke and the tripwires. */
-export function updateEffects(world, dt) {
-  for (const ping of world.pings) ping.age += dt;
-  world.pings = world.pings.filter((ping) => ping.age < 0.9);
-  for (const coin of world.landedCoins) coin.age += dt;
-  for (const cloud of world.smoke) cloud.left -= dt;
-  world.smoke = world.smoke.filter((cloud) => cloud.left > 0);
-  for (const wire of world.wires) {
-    if (wire.coolLeft > 0) wire.coolLeft -= dt;
   }
 }
 
-/** Send Wren back to the service door after being caught, guards calming. */
-export function respawnPlayer(world) {
-  const level = levelOf(world);
-  const p = world.player;
-  p.x = level.start.x;
-  p.y = level.start.y;
-  p.facing = 0;
-  p.ripples = [];
-  p.caughtFlash = 1;
-  for (const guard of world.guards) {
-    guard.suspicion = 18;
-    guard.state = 'patrol';
-    guard.lastSeen = null;
-    guard.investigateAt = null;
-    guard.unseenFor = 99;
+// Throw a coin toward (tx, ty), clamped to the throw range.
+export function throwCoin(state, tx, ty, sfx) {
+  if (state.coins <= 0) return false;
+  const p = state.player;
+  const d = dist(p.x, p.y, tx, ty);
+  const reach = Math.min(d, COIN_THROW_MAX);
+  const a = Math.atan2(ty - p.y, tx - p.x);
+  const lx = p.x + Math.cos(a) * reach;
+  const ly = p.y + Math.sin(a) * reach;
+  state.coins -= 1;
+  state.coinsFlying.push({ sx: p.x, sy: p.y, tx: lx, ty: ly, t: 0 });
+  if (sfx) sfx.coinThrow();
+  return true;
+}
+
+// Drop a smoke bomb at Wren's feet.
+export function dropSmoke(state, sfx) {
+  if (state.smokesLeft <= 0) return false;
+  const p = state.player;
+  state.smokesLeft -= 1;
+  state.smokes.push({ x: p.x, y: p.y, left: SMOKE_TIME });
+  addEvent(state, 'Smoke out — the cones go blind.');
+  if (sfx) sfx.smoke();
+  return true;
+}
+
+// Douse the nearest lit lamp within reach.
+export function douseLamp(state, sfx) {
+  const p = state.player;
+  const floor = FLOORS[state.floor];
+  let best = -1;
+  let bestD = DOUSE_RANGE;
+  for (let i = 0; i < floor.lamps.length; i++) {
+    if (state.lampsOff.has(i)) continue;
+    const l = floor.lamps[i];
+    const d = dist(p.x, p.y, l.x, l.y);
+    if (d <= bestD) { best = i; bestD = d; }
   }
+  if (best < 0) return false;
+  state.lampsOff.add(best);
+  addEvent(state, 'Lamp doused. The dark grows.');
+  if (sfx) sfx.douse();
+  return true;
+}
+
+// Advance coins in flight, landed pings, smoke clouds and wire timers.
+export function tickGadgets(state, dt, sfx) {
+  for (const c of state.coinsFlying) c.t += dt;
+  const landed = state.coinsFlying.filter((c) => c.t >= COIN_FLIGHT);
+  state.coinsFlying = state.coinsFlying.filter((c) => c.t < COIN_FLIGHT);
+  for (const c of landed) {
+    state.coinsLanded.push({ x: c.tx, y: c.ty, ping: 0 });
+    state.coinNoiseAt = state.time;
+    guardsHearCoin(state, c.tx, c.ty);
+    if (sfx) sfx.coinLand();
+  }
+  for (const c of state.coinsLanded) c.ping += dt;
+  state.coinsLanded = state.coinsLanded.filter((c) => c.ping < 1.2);
+  for (const s of state.smokes) s.left -= dt;
+  state.smokes = state.smokes.filter((s) => s.left > 0);
+  for (let i = 0; i < state.wiresCool.length; i++) {
+    state.wiresCool[i] = Math.max(0, state.wiresCool[i] - dt);
+  }
+}
+
+// Is Wren standing in the open exit doorway?
+export function atExit(state) {
+  if (!exitOpen(state)) return false;
+  const e = FLOORS[state.floor].exit;
+  const p = state.player;
+  return p.x > e.x - 6 && p.x < e.x + e.w + 6
+    && p.y > e.y - 6 && p.y < e.y + e.h + 6;
+}
+
+// Finish the floor: +200, and either the next floor or the win screen.
+// Returns 'next' or 'win'.
+export function finishFloor(state) {
+  state.score += SCORE_FLOOR;
+  if (state.floor >= FLOORS.length - 1) return 'win';
+  state.floor += 1;
+  return 'next';
+}
+
+// Respawn after being caught: lose a life, back to the entrance,
+// guards calm down.
+export function respawn(state) {
+  state.lives -= 1;
+  const f = FLOORS[state.floor];
+  state.player.x = f.start.x;
+  state.player.y = f.start.y;
+  state.player.face = -Math.PI / 2;
+  state.smokes = [];
+  state.coinsFlying = [];
+  calmGuards(state);
 }

@@ -1,55 +1,62 @@
-// A tiny static server for game/ (Node 22, stdlib only), so the entry can
-// be played locally without a build step:
-//
-//   node serve.ts            # serves game/ on http://localhost:8080
-//   node serve.ts --port N   # or on port N
-//
-// Development convenience only; the entry itself is static files, and the
-// grader never runs this server — it reads game/ straight off the disk.
-import { createReadStream } from 'node:fs';
+// Emberwatch: Night Shift — static file server for local play.
+// Node 22 standard library only. Serves game/ on port 8080 unless
+// --port is given. Paths that escape the game root are refused.
+
 import { createServer } from 'node:http';
+import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const gameRoot = resolve(fileURLToPath(new URL('./game', import.meta.url)));
-const argv = process.argv.slice(2);
-const portFlag = argv.indexOf('--port');
-const wanted = portFlag === -1 ? 8080 : Number(argv[portFlag + 1]);
-const port = Number.isInteger(wanted) && wanted > 0 && wanted < 65536 ? wanted : 8080;
+const ROOT = resolve(join(fileURLToPath(new URL('.', import.meta.url)), 'game'));
 
-const MIME_TYPES = {
+const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
+  '.svg': 'image/svg+xml',
+  '.wav': 'audio/wav',
 };
 
-createServer((request, response) => {
-  const url = new URL(request.url ?? '/', 'http://localhost');
-  let pathname;
+function portFromArgs() {
+  const idx = process.argv.indexOf('--port');
+  if (idx >= 0 && process.argv[idx + 1]) {
+    const p = Number(process.argv[idx + 1]);
+    if (Number.isInteger(p) && p > 0 && p < 65536) return p;
+  }
+  return 8080;
+}
+
+const server = createServer(async (req, res) => {
   try {
-    pathname = decodeURIComponent(url.pathname);
-  } catch {
-    response.writeHead(400).end('bad request');
-    return;
+    const raw = decodeURIComponent(new URL(req.url || '/', 'http://localhost').pathname);
+    let rel = normalize(raw).replace(/^[/\\]+/, '');
+    if (rel === '') rel = 'index.html';
+    const file = resolve(join(ROOT, rel));
+    if (!file.startsWith(ROOT + sep) && file !== ROOT) {
+      res.writeHead(403, { 'content-type': 'text/plain' });
+      res.end('forbidden');
+      return;
+    }
+    const body = await readFile(file);
+    res.writeHead(200, { 'content-type': MIME[extname(file).toLowerCase()] || 'application/octet-stream' });
+    res.end(body);
+  } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      res.writeHead(404, { 'content-type': 'text/plain' });
+      res.end('not found');
+    } else {
+      res.writeHead(500, { 'content-type': 'text/plain' });
+      res.end('server error');
+    }
   }
-  if (pathname.endsWith('/')) pathname += 'index.html';
-  const file = resolve(join(gameRoot, normalize(pathname)));
-  if (!file.startsWith(gameRoot + sep)) {
-    response.writeHead(403).end('forbidden');
-    return;
-  }
-  const type = MIME_TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream';
-  response.writeHead(200, { 'Content-Type': type });
-  createReadStream(file)
-    .on('error', () => {
-      if (!response.headersSent) response.writeHead(404);
-      response.end('not found');
-    })
-    .pipe(response);
-}).listen(port, () => {
+});
+
+const port = portFromArgs();
+server.listen(port, () => {
   console.log(`Emberwatch serving game/ at http://localhost:${port}`);
 });

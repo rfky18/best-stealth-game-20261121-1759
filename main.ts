@@ -1,41 +1,50 @@
-// Emberwatch: Night Shift v3 — the hand-in program (Node 22, stdlib only).
-//
-// What it does: copy this repo's game/ and screenshots/ into the output
-// directory, then write /output/dossier.json — the summary the judge
-// reads — using the vendored make.fun library. Outside the grader,
-// MAKEFUN_OUTPUT_DIR stands in for /output:
-//
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
-//
-// To play the game locally, run `node serve.ts` and open
-// http://localhost:8080. No build step, no network requests.
+// Emberwatch: Night Shift — hand-in program.
+// Copies game/ and screenshots/ into the output directory and writes
+// dossier.json with buildDossier from the kit's vendor library.
+// Node 22 standard library only. Deterministic: the same input always
+// writes the same bytes.
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
-const repoRoot = fileURLToPath(new URL('.', import.meta.url));
-const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+const OUTPUT = process.env.MAKEFUN_OUTPUT_DIR || '/output';
+const ROOT = fileURLToPath(new URL('.', import.meta.url));
 
-mkdirSync(outDir, { recursive: true });
-cpSync(join(repoRoot, 'game'), join(outDir, 'game'), { recursive: true });
-mkdirSync(join(outDir, 'screenshots'), { recursive: true });
-if (existsSync(join(repoRoot, 'screenshots'))) {
-  cpSync(join(repoRoot, 'screenshots'), join(outDir, 'screenshots'), { recursive: true });
+function copyTree(src: string, dest: string): void {
+  mkdirSync(dest, { recursive: true });
+  const entries = readdirSync(src).sort();
+  for (const name of entries) {
+    const from = join(src, name);
+    const to = join(dest, name);
+    const st = statSync(from);
+    if (st.isDirectory()) {
+      copyTree(from, to);
+    } else if (st.isFile()) {
+      cpSync(from, to);
+    }
+  }
 }
 
-// The scorer's own caps, taken from the kit's gate. Only text_max_bytes
-// shapes the bytes; the rest refuse an entry the scorer would refuse:
-// more than 4 screenshots or one over 256 KiB; more than 993 files in
-// game/ or 48 MiB of game files in all; a path under game/ over 1000 bytes.
-writeFileSync(
-  join(outDir, 'dossier.json'),
-  buildDossier(outDir, {
+function main(): void {
+  const out = resolve(OUTPUT);
+  rmSync(out, { recursive: true, force: true });
+  mkdirSync(out, { recursive: true });
+  const gameSrc = join(ROOT, 'game');
+  const shotsSrc = join(ROOT, 'screenshots');
+  if (!existsSync(gameSrc)) throw new Error('game/ is missing from the repository');
+  copyTree(gameSrc, join(out, 'game'));
+  if (existsSync(shotsSrc)) copyTree(shotsSrc, join(out, 'screenshots'));
+  const dossier = buildDossier(out, {
     text_max_bytes: 163840,
     screenshots: { max: 4, max_bytes: 262144 },
     game_max_files: 993,
     game_max_bytes: 50331648,
     game_path_max_bytes: 1000,
-  }),
-);
+  });
+  writeFileSync(join(out, 'dossier.json'), dossier);
+  console.log(`wrote ${out} (dossier ${dossier.length} bytes)`);
+}
+
+main();

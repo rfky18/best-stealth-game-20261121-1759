@@ -1,55 +1,65 @@
 # Emberwatch: Night Shift
 
-[![make.fun · best-stealth-game-20261121-1759](https://make.fun/badge/best-stealth-game-20261121-1759.svg)](https://make.fun/bounty/best-stealth-game-20261121-1759?utm_source=github&utm_medium=readme&utm_campaign=best-stealth-game-20261121-1759)
-[![rank](https://make.fun/badge/best-stealth-game-20261121-1759/rfky18/best-stealth-game-20261121-1759/rank.svg)](https://make.fun/bounty/best-stealth-game-20261121-1759/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=best-stealth-game-20261121-1759)
-[![reward](https://make.fun/badge/best-stealth-game-20261121-1759/rfky18/best-stealth-game-20261121-1759/reward.svg)](https://make.fun/bounty/best-stealth-game-20261121-1759?utm_source=github&utm_medium=readme&utm_campaign=best-stealth-game-20261121-1759)
+[![make.fun — best stealth game](https://img.shields.io/badge/make.fun-best--stealth--game-blue)](https://make.fun/c/best-stealth-game-20261121-1759)
+[![rank](https://img.shields.io/badge/rank-awaiting%20judgement-lightgrey)](https://make.fun/c/best-stealth-game-20261121-1759/leaderboard#rfky18/best-stealth-game-20261121-1759)
+[![reward](https://img.shields.io/badge/reward-%2450%20USDC-gold)](https://make.fun/c/best-stealth-game-20261121-1759/leaderboard#rfky18/best-stealth-game-20261121-1759)
 
-A top-down stealth game built for the [make.fun](https://make.fun) best stealth game bounty. You are **Wren**, a shadow courier breaking into the Emberwatch lantern works at night: pocket ten ember shards across three floors — the depot, the gallery, the vault — and slip out the green EXIT without ever being seen.
+You are **Wren**, a shadow courier. On a lantern-lit night you slip through three floors of a guarded house — **The Depot**, **The Gallery**, **The Vault** — pocket all ten ember shards, and leave through the green **EXIT** without ever being seen. Three lives. One ghost bonus if nobody ever spots you.
 
 ## How to play
 
-- **Move:** WASD or arrow keys. **Sneak:** hold Shift (slower, quieter).
-- **Toss a coin:** click the floor (or press **C**) — the clink pulls nearby guards away to investigate. Five coins per floor.
-- **Smoke bomb:** press **Q** — a cloud hangs for a few seconds and no guard can see through it. Two per floor.
-- **Douse a lamp:** press **E** near a burning lamp — its light pool goes dark for the rest of the floor.
-- **P** pause · **R** restart · **M** mute · **Enter** start / confirm.
-- Guards patrol fixed loops — learn the rhythm, slip through the gaps. The depot has four guards, the gallery five, the vault six, and they walk faster on every floor.
-- **Vision cones** show what a guard can see. A cone turns gold as suspicion grows, orange when the guard comes to look, red when he chases. Each guard carries his own suspicion bar over his head, and the side panel lists every guard's state live.
-- **Suspicion** climbs in stages: curious → alert (the guard walks over to look) → chase. Break line of sight and it falls again — being seen is not instant failure. A scare that ends well counts as a **close call** (+50 points).
-- **Shadow** patches hide you (detection is far slower there). **Lamp light** exposes you (detection is faster). Running is fast but loud: guards hear footsteps and come to look.
-- **Tripwires** cross the gallery and the vault. Step on one and the whole floor gets curious at once — go around, or be quick.
-- The **detection panel** (right) shows status (UNSEEN / SUSPICIOUS / ALERT / CHASED), alarm, visibility with live exposure %, noise, loot, spotted count, goal and score — plus the legend and the last three things that happened.
-- **Score:** shard +100, close call +50, floor cleared +200, and a **GHOST bonus +500** if you finish the night without ever being spotted.
-- Caught three times and the night shift ends. Escape all three floors unseen and the lantern is yours.
+- **WASD / arrow keys** — move. **SHIFT** — sneak (slow, quiet).
+- **Click the floor / C** — toss a coin (5 per floor, max range 240). Guards in earshot walk over to investigate the clink.
+- **Q** — smoke bomb at your feet (2 per floor, radius 72, lasts 3.5 s). Guards cannot see you inside smoke, or through it.
+- **E** — douse the nearest lit lamp within 100 px. It stays dark for the rest of the floor.
+- **P / Esc** — pause. **R** — restart. **M** — mute. **Enter / Space** — start / confirm.
 
-## Play it
+## Detection
+
+Every guard patrols a fixed loop and sweeps their vision cone while waiting at a waypoint. Suspicion rises while a guard sees you — faster in the open and in lamplight, slower in shadow — and falls when you break sight. At 60 a guard grows curious and comes to look; at 92 they chase. Get caught and you lose a life and wake up at the entrance with the guards calmed.
+
+- **Close call**: suspicion climbs past 45, then fades below 15 without a chase — **+50 pts** and a toast.
+- **Tripwires** (floors 2 and 3): step on one and every guard on the floor gets +25 suspicion and converges on the wire. It needs 8 s to re-arm.
+- **Running** is loud: guards nearby hear your steps.
+- **Shards** are worth 100 pts each; finishing a floor is +200. **GHOST +500** if you win with zero spotted.
+
+## The detection panel
+
+The right-hand panel is alive the whole run: a big status word (**UNSEEN / SUSPICIOUS ? / ALERT! / CHASED!**) with advice, an **ALARM** bar, a **VISIBILITY** bar with your live exposure (in shadow, in the open, in lamplight, in smoke), a **NOISE** readout, loot / spotted / goal / score, the **GHOST** line, a per-guard suspicion list, a legend, controls, and the last three events under **WHAT HAPPENED** — including a guard's *"WHAT WAS THAT?"* the moment they spot you.
+
+## Run it
 
 ```sh
 node serve.ts
 # open http://localhost:8080
 ```
 
-No build step, no network requests: `game/` is plain static files (vanilla JS canvas).
+No build step, no network requests: the game is plain files under `game/`, and all sound is synthesized with WebAudio.
 
-## Source layout
+## Files
 
 | File | Job |
 | --- | --- |
-| `game/src/config.js` | Three floor layouts (depot + gallery + vault), tuning, scores |
-| `game/src/world.js` | Floor geometry: sight lines, shadow/light/smoke tests, collision, events |
-| `game/src/guard.js` | Patrol loops, vision cones, suspicion, alert/chase, coin hearing, tripwires |
-| `game/src/player.js` | Wren: movement, sneaking, coin tosses, smoke, lamp dousing, shards, exit |
-| `game/src/render.js` | Canvas drawing: floor, lighting, cones, guards, smoke, HUD, screens |
-| `game/src/panel.js` | The right-hand detection panel: status, guards, legend, event feed |
-| `game/src/audio.js` | Synthesized WebAudio: footsteps, alarm, coin clink, shard, smoke, douse, zap |
-| `game/src/input.js` | Keyboard and mouse input |
-| `game/src/shots.js` | Staged screenshot scenes (`?shot=cover\|nearmiss\|smoke\|exit`) |
-| `game/src/main.js` | Boot, the fixed-step game loop, floor progression, GHOST bonus |
-| `main.ts` | Hand-in program: copies `game/` + `screenshots/` to `/output`, writes `dossier.json` |
+| `game/src/config.js` | Constants, the three floors, tuning, scoring |
+| `game/src/world.js` | Geometry: line of sight, raycasts, circle collision, shadow / lamp / smoke tests, exposure, tripwires, world state, event feed, toasts |
+| `game/src/guard.js` | Patrols, vision cones, suspicion, the patrol / curious / chase machine, coin hearing, tripwire response, being caught, highest suspicion |
+| `game/src/player.js` | Wren's movement, coin throws, smoke bombs, dousing lamps, shards, score, the exit, respawning |
+| `game/src/input.js` | Keyboard + mouse, edge-triggered actions |
+| `game/src/audio.js` | All synthesized WebAudio sounds |
+| `game/src/render.js` | Everything drawn on the canvas, the HUD, and the screens |
+| `game/src/panel.js` | The right-hand detection panel only |
+| `game/src/shots.js` | The 4 staged scenes for the screenshots |
+| `game/src/main.js` | Boot, the fixed-step 1/60 s loop, screens, the one-time GHOST bonus, best score |
+| `game/index.html` | The canvas and a screen-reader status line |
+| `main.ts` | The hand-in program (copies game + screenshots, writes dossier.json) |
+| `serve.ts` | A small static dev server for `game/` |
 
 ## Screenshots
 
-`?shot=cover` stages the whole depot in one view; `nearmiss` stages Wren in the lamplight at the edge of a cone, `smoke` stages a smoke bomb blinding the vault's cones over a tripwire, and `exit` stages the final escape with the GHOST bonus still alive. Screenshots in `screenshots/` are real renders of this code in a browser.
+1. **Cover** — The Depot: Wren hidden in the middle shadow while Bram's cone sweeps past.
+2. **Near miss** — The Gallery: Nyx is suspicious in the lamplight, a close call just banked.
+3. **Smoke** — The Vault: Wren inside a smoke cloud as Ash closes in.
+4. **Exit** — The Vault: all ten shards pocketed, the green EXIT open, nobody spotted.
 
 ## License
 

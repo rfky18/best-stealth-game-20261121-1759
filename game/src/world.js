@@ -1,282 +1,329 @@
-// The night itself: the level Wren is on, the geometry questions the
-// rest of the game asks ("can this guard see that point?", "is this spot
-// shadow or lamplight?", "did Wren cross the wire?"), the event feed the
-// panel reads, and the coins and smoke Wren throws to stay unseen.
-import { LEVELS, TUNE } from './config.js';
+// World geometry and shared floor state: line of sight, raycasts,
+// circle-vs-rect collision, shadow / lamp / smoke tests, exposure,
+// tripwires, the event feed and toasts.
 
-/** True when the point sits inside any rectangle of the list. */
-export function pointInRects(x, y, rects) {
-  for (const r of rects) {
-    if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) return true;
+import {
+  FLOORS, TOTAL_SHARDS, SMOKE_R, TRIP_R, TRIP_COOLDOWN,
+  clamp, dist, fmtTime,
+} from './config.js';
+
+// ---- basic geometry -------------------------------------------------
+
+export function pointInRect(px, py, r) {
+  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+}
+
+export function pointInCrate(px, py, floor) {
+  for (const c of floor.crates) {
+    if (px >= c.x && px <= c.x + 44 && py >= c.y && py <= c.y + 44) return true;
   }
   return false;
 }
 
-/** The level Wren is standing on right now. */
-export function levelOf(world) {
-  return LEVELS[world.levelIndex];
-}
-
-/** All solid rectangles of a level: walls plus crates. Both block sight. */
-export function solidsOf(level) {
-  if (!level.solids) level.solids = level.walls.concat(level.crates);
-  return level.solids;
-}
-
-/** True when the point is inside a shadow patch of the current level. */
-export function inShadow(world, x, y) {
-  return pointInRects(x, y, levelOf(world).shadows);
-}
-
-/** True when the point is inside a lit lamp's light pool of this level. */
-export function inLight(world, x, y) {
-  for (const lamp of world.lampsLive) {
-    const dx = x - lamp.x;
-    const dy = y - lamp.y;
-    if (dx * dx + dy * dy <= lamp.r * lamp.r) return true;
-  }
-  return false;
-}
-
-/** True when the point sits inside any smoke cloud still hanging. */
-export function inSmoke(world, x, y) {
-  for (const cloud of world.smoke) {
-    const dx = x - cloud.x;
-    const dy = y - cloud.y;
-    if (dx * dx + dy * dy <= TUNE.smokeRadius * TUNE.smokeRadius) return true;
-  }
-  return false;
-}
-
-/**
- * How exposed Wren is right now, 0..100: shadow hides, open floor shows,
- * lamplight gives away, smoke covers, running adds to it. The panel
- * shows this number live, so the player always knows what the guards see.
- */
-export function exposureOf(world) {
-  const p = world.player;
-  if (inSmoke(world, p.x, p.y)) return 0;
-  let value = inShadow(world, p.x, p.y) ? 5 : 40;
-  if (inLight(world, p.x, p.y)) value = 90;
-  if (p.moving && !p.sneaking) value = Math.min(100, value + 10);
-  return value;
-}
-
-/** Words for the exposure number: what the panel prints beside it. */
-export function exposureLabel(world) {
-  const p = world.player;
-  if (inSmoke(world, p.x, p.y)) return 'IN SMOKE';
-  if (inShadow(world, p.x, p.y)) return 'IN SHADOW';
-  if (inLight(world, p.x, p.y)) return 'IN LAMPLIGHT';
-  return 'IN THE OPEN';
-}
-
-/** Line of sight between two points on a level, sampled every 8 px. */
-export function hasLineOfSight(level, x0, y0, x1, y1) {
-  const dx = x1 - x0;
-  const dy = y1 - y0;
-  const dist = Math.hypot(dx, dy);
-  const steps = Math.max(1, Math.ceil(dist / 8));
-  const blocks = solidsOf(level);
-  for (let i = 1; i < steps; i++) {
-    const t = i / steps;
-    if (pointInRects(x0 + dx * t, y0 + dy * t, blocks)) return false;
-  }
-  return true;
-}
-
-/**
- * Distance from a point along a ray before it hits a solid rect, or
- * maxDist when the ray stays clear. The renderer clips vision cones
- * with it, so the lit wedge is exactly what the guard can see.
- */
-export function rayHitDistance(level, x0, y0, angle, maxDist) {
-  const dx = Math.cos(angle);
-  const dy = Math.sin(angle);
-  const steps = Math.ceil(maxDist / 4);
-  const blocks = solidsOf(level);
-  for (let i = 1; i <= steps; i++) {
-    const d = (i / steps) * maxDist;
-    if (pointInRects(x0 + dx * d, y0 + dy * d, blocks)) return Math.max(4, d - 4);
-  }
-  return maxDist;
-}
-
-/** Distance from a point to a segment — how close Wren came to a wire. */
-export function distToSegment(px, py, x1, y1, x2, y2) {
+// Distance from a point to a segment.
+export function pointSegDist(px, py, x1, y1, x2, y2) {
   const dx = x2 - x1;
   const dy = y2 - y1;
   const len2 = dx * dx + dy * dy;
   let t = len2 === 0 ? 0 : ((px - x1) * dx + (py - y1) * dy) / len2;
-  t = Math.max(0, Math.min(1, t));
-  const cx = x1 + t * dx;
-  const cy = y1 + t * dy;
-  return Math.hypot(px - cx, py - cy);
+  t = clamp(t, 0, 1);
+  return dist(px, py, x1 + t * dx, y1 + t * dy);
 }
 
-/** Push a circle (x, y, radius) out of every solid rect it overlaps. */
-export function resolveCircle(level, x, y, radius) {
-  for (const r of solidsOf(level)) {
-    const cx = Math.max(r.x, Math.min(x, r.x + r.w));
-    const cy = Math.max(r.y, Math.min(y, r.y + r.h));
-    const dx = x - cx;
-    const dy = y - cy;
-    const d2 = dx * dx + dy * dy;
-    if (d2 < radius * radius) {
-      if (d2 > 0.0001) {
-        const d = Math.sqrt(d2);
-        x = cx + (dx / d) * radius;
-        y = cy + (dy / d) * radius;
-      } else {
-        // Dead centre inside the rect: push out along the shallowest side.
-        const left = x - r.x;
-        const right = r.x + r.w - x;
-        const top = y - r.y;
-        const bottom = r.y + r.h - y;
-        const m = Math.min(left, right, top, bottom);
-        if (m === left) x = r.x - radius;
-        else if (m === right) x = r.x + r.w + radius;
-        else if (m === top) y = r.y - radius;
-        else y = r.y + r.h + radius;
-      }
+// Does segment (x1,y1)-(x2,y2) hit rectangle r? Slab test.
+export function segHitsRect(x1, y1, x2, y2, r) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  let t0 = 0;
+  let t1 = 1;
+  const minX = r.x;
+  const maxX = r.x + r.w;
+  const minY = r.y;
+  const maxY = r.y + r.h;
+  if (Math.abs(dx) < 1e-9) {
+    if (x1 < minX || x1 > maxX) return false;
+  } else {
+    let a = (minX - x1) / dx;
+    let b = (maxX - x1) / dx;
+    if (a > b) { const t = a; a = b; b = t; }
+    t0 = Math.max(t0, a);
+    t1 = Math.min(t1, b);
+    if (t0 > t1) return false;
+  }
+  if (Math.abs(dy) < 1e-9) {
+    if (y1 < minY || y1 > maxY) return false;
+  } else {
+    let a = (minY - y1) / dy;
+    let b = (maxY - y1) / dy;
+    if (a > b) { const t = a; a = b; b = t; }
+    t0 = Math.max(t0, a);
+    t1 = Math.min(t1, b);
+    if (t0 > t1) return false;
+  }
+  return true;
+}
+
+// All solid rectangles on a floor: walls plus crates as 44x44 rects.
+export function solidRects(floor) {
+  const out = floor.walls.slice();
+  for (const c of floor.crates) out.push({ x: c.x, y: c.y, w: 44, h: 44 });
+  return out;
+}
+
+// Clear line of sight between two points (walls and crates block).
+export function hasLineOfSight(x1, y1, x2, y2, floor) {
+  for (const r of solidRects(floor)) {
+    if (segHitsRect(x1, y1, x2, y2, r)) return false;
+  }
+  return true;
+}
+
+// Cast one ray from (x,y) along angle a; returns the distance to the
+// nearest solid, capped at maxD.
+export function raycast(x, y, a, maxD, floor) {
+  const dx = Math.cos(a);
+  const dy = Math.sin(a);
+  const x2 = x + dx * maxD;
+  const y2 = y + dy * maxD;
+  let best = maxD;
+  for (const r of solidRects(floor)) {
+    const hit = rayRectT(x, y, dx, dy, r);
+    if (hit !== null && hit < best) best = hit;
+  }
+  return best;
+}
+
+// Ray vs rect: distance along the ray to first contact, or null.
+function rayRectT(x, y, dx, dy, r) {
+  let t0 = 0;
+  let t1 = Infinity;
+  const minX = r.x;
+  const maxX = r.x + r.w;
+  const minY = r.y;
+  const maxY = r.y + r.h;
+  if (Math.abs(dx) < 1e-9) {
+    if (x < minX || x > maxX) return null;
+  } else {
+    let a = (minX - x) / dx;
+    let b = (maxX - x) / dx;
+    if (a > b) { const t = a; a = b; b = t; }
+    t0 = Math.max(t0, a);
+    t1 = Math.min(t1, b);
+    if (t0 > t1) return null;
+  }
+  if (Math.abs(dy) < 1e-9) {
+    if (y < minY || y > maxY) return null;
+  } else {
+    let a = (minY - y) / dy;
+    let b = (maxY - y) / dy;
+    if (a > b) { const t = a; a = b; b = t; }
+    t0 = Math.max(t0, a);
+    t1 = Math.min(t1, b);
+    if (t0 > t1) return null;
+  }
+  return t0;
+}
+
+// Move a circle (x,y,r) by (dx,dy), sliding along solids.
+export function moveCircle(state, x, y, r, dx, dy) {
+  const floor = FLOORS[state.floor];
+  const solids = solidRects(floor);
+  let nx = x + dx;
+  for (const s of solids) {
+    if (circleHitsRect(nx, y, r, s)) {
+      nx = dx > 0 ? s.x - r : dx < 0 ? s.x + s.w + r : nx;
     }
   }
-  return { x, y };
+  let ny = y + dy;
+  for (const s of solids) {
+    if (circleHitsRect(nx, ny, r, s)) {
+      ny = dy > 0 ? s.y - r : dy < 0 ? s.y + s.h + r : ny;
+    }
+  }
+  return { x: nx, y: ny };
 }
 
-/** One guard, standing on its first waypoint, calm and unsuspicious. */
-function makeGuard(def) {
+function circleHitsRect(cx, cy, r, s) {
+  const qx = clamp(cx, s.x, s.x + s.w);
+  const qy = clamp(cy, s.y, s.y + s.h);
+  const ddx = cx - qx;
+  const ddy = cy - qy;
+  return ddx * ddx + ddy * ddy < r * r;
+}
+
+// ---- light / shadow / smoke tests -----------------------------------
+
+export function inShadow(x, y, floor) {
+  for (const s of floor.shadows) {
+    if (pointInRect(x, y, s)) return true;
+  }
+  return false;
+}
+
+export function lampAt(x, y, state) {
+  const floor = FLOORS[state.floor];
+  for (let i = 0; i < floor.lamps.length; i++) {
+    if (state.lampsOff.has(i)) continue;
+    const l = floor.lamps[i];
+    if (dist(x, y, l.x, l.y) <= l.r) return l;
+  }
+  return null;
+}
+
+export function inSmoke(x, y, state) {
+  for (const c of state.smokes) {
+    if (c.left > 0 && dist(x, y, c.x, c.y) <= SMOKE_R) return true;
+  }
+  return false;
+}
+
+// Smoke blocks sight when the guard-to-player segment crosses a cloud.
+// Sampled every 10 px along the segment, per spec.
+export function smokeBlocks(x1, y1, x2, y2, state) {
+  const total = dist(x1, y1, x2, y2);
+  const steps = Math.max(1, Math.ceil(total / 10));
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    const px = x1 + (x2 - x1) * t;
+    const py = y1 + (y2 - y1) * t;
+    if (inSmoke(px, py, state)) return true;
+  }
+  return false;
+}
+
+// Live exposure 0-100 for the player.
+export function exposure(state) {
+  const p = state.player;
+  if (inSmoke(p.x, p.y, state)) return 0;
+  let v = inShadow(p.x, p.y, FLOORS[state.floor]) ? 5 : 40;
+  if (lampAt(p.x, p.y, state)) v = 90;
+  if (!p.sneaking) v += 10;
+  return clamp(v, 0, 100);
+}
+
+export function exposureLabel(state) {
+  const p = state.player;
+  const v = exposure(state);
+  if (inSmoke(p.x, p.y, state)) return 'IN SMOKE 0%';
+  if (lampAt(p.x, p.y, state)) return `IN LAMPLIGHT ${v}%`;
+  if (inShadow(p.x, p.y, FLOORS[state.floor])) return `IN SHADOW ${v}%`;
+  return `IN THE OPEN ${v}%`;
+}
+
+// ---- world state ------------------------------------------------------
+
+export function freshState() {
+  return {
+    screen: 'title', // title | playing | paused | floorcard | caught | win | gameover
+    floor: 0,
+    time: 0,
+    score: 0,
+    lives: 3,
+    shardsGot: 0,
+    closeCalls: 0,
+    spotted: 0,
+    coins: 5,
+    smokesLeft: 2,
+    lampsOff: new Set(),
+    shardsTaken: new Set(),
+    smokes: [], // {x, y, left}
+    coinsFlying: [], // {sx, sy, tx, ty, t}
+    coinsLanded: [], // {x, y, ping}
+    wiresCool: [], // seconds left per wire
+    events: [], // {at, text}
+    toast: null, // {text, left}
+    toastLong: 0,
+    floorCardLeft: 0,
+    caughtLeft: 0,
+    ghostAwarded: false,
+    best: 0,
+    player: {
+      x: 64, y: 648, face: -Math.PI / 2, moving: false,
+      sneaking: false, running: false, stepAt: 0,
+    },
+    guards: [],
+    ripples: [], // {x, y, r, max, left, total, color}
+    coinNoiseAt: -99,
+    muted: false,
+  };
+}
+
+// (Re)build the guard list and per-floor counters for the current floor.
+export function loadFloor(state) {
+  const f = FLOORS[state.floor];
+  state.guards = f.guards.map((g) => makeGuard(g));
+  state.coins = 5;
+  state.smokesLeft = 2;
+  state.lampsOff = new Set();
+  state.shardsTaken = new Set();
+  state.smokes = [];
+  state.coinsFlying = [];
+  state.coinsLanded = [];
+  state.wiresCool = f.wires.map(() => 0);
+  state.player.x = f.start.x;
+  state.player.y = f.start.y;
+  state.player.face = -Math.PI / 2;
+  state.ripples = [];
+}
+
+export function makeGuard(def) {
   return {
     name: def.name,
     color: def.color,
-    x: def.waypoints[0].x,
-    y: def.waypoints[0].y,
-    facing: def.facing,
-    waypointIndex: 1,
-    pauseLeft: 0,
-    lookLeft: 0,
+    path: def.path,
+    wait: def.wait,
+    speed: def.speed,
+    x: def.path[0].x,
+    y: def.path[0].y,
+    face: def.face,
+    wp: 1 % def.path.length,
+    waiting: 0,
+    sweep: 0,
     suspicion: 0,
-    state: 'patrol', // patrol | investigate | chase
+    mode: 'patrol', // patrol | curious | chase
     lastSeen: null,
-    investigateAt: null,
+    lookLeft: 0,
     unseenFor: 0,
-    hot: false, // suspicion crossed the near-miss line since last cool-down
-    ripples: [],
-    rippleTimer: 0,
-    alerted: false,
-    spottedCounted: false,
+    peak: 0,
+    chasedThisRun: false,
+    stepAt: 0,
+    cone: [],
   };
 }
 
-/** Fresh game state: floor 1, no shards, full lives, five coins. */
-export function createWorld() {
-  const world = {
-    time: 0,
-    levelIndex: 0,
-    shardsTaken: 0,
-    totalTaken: 0,
-    coins: LEVELS[0].coins,
-    smokeLeft: LEVELS[0].smoke,
-    score: 0,
-    spotted: 0, // times a guard broke into a chase or caught Wren
-    nearMisses: 0,
-    lives: TUNE.lives,
-    status: 'play', // play | caught | levelcard | won | over
-    statusTimer: 0,
-    toast: '',
-    toastTimer: 0,
-    bestScore: 0,
-    events: [], // newest first, {t, text} — the panel's event feed
-    shards: [],
-    guards: [],
-    wires: [], // tripwires of this floor: {x1,y1,x2,y2,coolLeft}
-    lampsLive: [], // lamps still burning: {x,y,r}
-    thrownCoin: null, // a coin mid-flight: {x0,y0,x1,y1,t}
-    landedCoins: [],
-    pings: [], // expanding sound rings where a coin landed
-    smoke: [], // smoke clouds hanging: {x,y,left}
-    player: {
-      x: LEVELS[0].start.x,
-      y: LEVELS[0].start.y,
-      facing: 0,
-      sneaking: false,
-      moving: false,
-      hidden: false,
-      lit: false,
-      smoked: false,
-      ripples: [],
-      rippleTimer: 0,
-      caughtFlash: 0,
-    },
-  };
-  loadLevel(world, 0);
-  return world;
+export function floorShardsLeft(state) {
+  return FLOORS[state.floor].shards.length - state.shardsTaken.size;
 }
 
-/** Fill a world with a floor's shards, guards, wires and lamps. */
-export function loadLevel(world, index) {
-  const level = LEVELS[index];
-  world.levelIndex = index;
-  world.shardsTaken = 0;
-  world.shards = level.shards.map((s) => ({ ...s, taken: false }));
-  world.guards = level.guards.map(makeGuard);
-  world.wires = level.tripwires.map((w) => ({ ...w, coolLeft: 0 }));
-  world.lampsLive = level.lamps.map((lamp) => ({ ...lamp }));
-  world.coins = level.coins;
-  world.smokeLeft = level.smoke;
-  world.thrownCoin = null;
-  world.landedCoins = [];
-  world.pings = [];
-  world.smoke = [];
-  const p = world.player;
-  p.x = level.start.x;
-  p.y = level.start.y;
-  p.facing = 0;
-  p.ripples = [];
-  p.caughtFlash = 0;
+export function exitOpen(state) {
+  return floorShardsLeft(state) === 0;
 }
 
-/** Reset a world back to the start of floor 1, same object shape. */
-export function resetWorld(world) {
-  world.time = 0;
-  world.totalTaken = 0;
-  world.score = 0;
-  world.spotted = 0;
-  world.nearMisses = 0;
-  world.lives = TUNE.lives;
-  world.status = 'play';
-  world.statusTimer = 0;
-  world.toast = '';
-  world.toastTimer = 0;
-  world.events = [];
-  loadLevel(world, 0);
-}
-
-/** True when the exit door of this floor stands open. */
-export function exitOpen(world) {
-  return world.shardsTaken >= levelOf(world).shards.length;
-}
-
-/** How many shards the whole night holds, across all three floors. */
 export function totalShards() {
-  let n = 0;
-  for (const level of LEVELS) n += level.shards.length;
-  return n;
+  return TOTAL_SHARDS;
 }
 
-/** The door's rectangle, for overlap tests and drawing. */
-export function exitRect(world) {
-  return levelOf(world).exit;
+// ---- events, toasts, tripwires ----------------------------------------
+
+export function addEvent(state, text) {
+  state.events.unshift({ at: state.time, text });
+  if (state.events.length > 3) state.events.length = 3;
 }
 
-/** Show a short toast line above the playfield ("CLOSE CALL!"). */
-export function showToast(world, text, seconds) {
-  world.toast = text;
-  world.toastTimer = seconds;
+export function showToast(state, text, dur = 1.8) {
+  state.toast = { text, left: dur };
 }
 
-/** Add a line to the event feed the detection panel shows (newest first). */
-export function pushEvent(world, text) {
-  world.events.unshift({ t: world.time, text });
-  if (world.events.length > 3) world.events.length = 3;
+export function tripwireAt(state, x, y) {
+  const f = FLOORS[state.floor];
+  for (let i = 0; i < f.wires.length; i++) {
+    if (state.wiresCool[i] > 0) continue;
+    const w = f.wires[i];
+    if (pointSegDist(x, y, w.x1, w.y1, w.x2, w.y2) < TRIP_R) return i;
+  }
+  return -1;
+}
+
+export function fmtEventAt(at) {
+  return fmtTime(at);
 }
