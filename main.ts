@@ -29,8 +29,13 @@ function copyTree(src: string, dest: string): void {
 
 function main(): void {
   const out = resolve(OUTPUT);
-  rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
+  // Clear previous contents WITHOUT removing the directory itself: the
+  // grader bind-mounts the output dir, and removing a mount point fails
+  // (rmSync on it throws and the run exits 1 — reproduced locally).
+  for (const name of readdirSync(out)) {
+    rmSync(join(out, name), { recursive: true, force: true });
+  }
   const gameSrc = join(ROOT, 'game');
   const shotsSrc = join(ROOT, 'screenshots');
   if (!existsSync(gameSrc)) throw new Error('game/ is missing from the repository');
