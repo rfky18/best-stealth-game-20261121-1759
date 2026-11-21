@@ -1,6 +1,7 @@
 // All sound is synthesized with WebAudio: no audio files, no network.
 // Footsteps are short filtered ticks, the alarm is a two-tone siren blip,
-// a shard pickup is a bright pluck, and winning is a small rising arpeggio.
+// a coin toss is a bright metallic clink, a shard pickup is a pluck, and
+// winning is a small rising arpeggio.
 let ctx = null;
 let muted = false;
 
@@ -53,13 +54,19 @@ export function playAlarm() {
   tone(830, 0.2, 'square', 0.05, 0.17);
 }
 
+/** The metallic clink of a tossed coin landing on stone. */
+export function playCoin() {
+  tone(2093, 0.09, 'sine', 0.06);
+  tone(2637, 0.14, 'sine', 0.04, 0.05);
+}
+
 /** Bright pluck when Wren pockets an ember shard. */
 export function playShard() {
   tone(880, 0.12, 'sine', 0.07);
   tone(1318, 0.18, 'sine', 0.05, 0.08);
 }
 
-/** The door unlocking once the last shard is pocketed. */
+/** The door unlocking once the last shard of a level is pocketed. */
 export function playUnlock() {
   tone(392, 0.12, 'sine', 0.06);
   tone(523, 0.12, 'sine', 0.06, 0.1);

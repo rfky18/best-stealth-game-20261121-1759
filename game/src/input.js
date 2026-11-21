@@ -1,16 +1,21 @@
-// Keyboard (and a little mouse): arrows/WASD move, Shift sneaks, P or Esc
-// pauses, R restarts, M mutes, Enter/Space confirms on the title screen.
+// Keyboard and mouse: arrows/WASD move, Shift sneaks, P or Esc pauses,
+// R restarts, M mutes, Enter/Space confirms on the title screen, C tosses
+// a coin ahead — and so does clicking the canvas, at the clicked spot.
 // Clicking the canvas also confirms, so mouse players can start the game.
+import { VIEW_W, VIEW_H } from './config.js';
+
 export const ACTION_CONFIRM = 'confirm';
 export const ACTION_PAUSE = 'pause';
 export const ACTION_RESTART = 'restart';
 export const ACTION_MUTE = 'mute';
+export const ACTION_TOSS = 'toss';
 
-/** Fresh key state: every key starts unpressed. */
+/** Fresh key state: every key starts unpressed, no coin target yet. */
 export function createKeys() {
   return {
     up: false, down: false, left: false, right: false,
-    sneak: false, confirm: false, pause: false, restart: false, mute: false,
+    sneak: false, confirm: false, pause: false, restart: false,
+    mute: false, toss: false, coinTarget: null,
   };
 }
 
@@ -23,42 +28,51 @@ const KEYMAP = {
   Enter: 'confirm', Space: 'confirm',
   KeyP: 'pause', Escape: 'pause',
   KeyR: 'restart', KeyM: 'mute',
+  KeyC: 'toss',
 };
 
 /**
  * Listen on the window and fill the key state. Edge-triggered actions
- * (confirm/pause/restart/mute) are set true on keydown and must be consumed
- * by the loop with takeAction, so one press never fires twice.
+ * (confirm/pause/restart/mute/toss) are set true on keydown and must be
+ * consumed by the loop with takeAction, so one press never fires twice.
+ * A canvas click records a coin target in game coordinates.
  */
-export function createInput(keys) {
+export function createInput(keys, canvas) {
   function onKeyDown(event) {
     const name = KEYMAP[event.code];
     if (!name) return;
-    if (name === 'confirm' || name === 'pause' || name === 'restart' || name === 'mute') {
-      keys[name] = true;
-    } else {
-      keys[name] = true;
-    }
+    keys[name] = true;
     if (event.code === 'Space' || event.code.startsWith('Arrow')) event.preventDefault();
   }
   function onKeyUp(event) {
     const name = KEYMAP[event.code];
     if (!name) return;
-    if (name !== 'confirm' && name !== 'pause' && name !== 'restart' && name !== 'mute') {
+    if (name !== 'confirm' && name !== 'pause' && name !== 'restart'
+      && name !== 'mute' && name !== 'toss') {
       keys[name] = false;
     }
   }
   function onBlur() {
     keys.up = keys.down = keys.left = keys.right = keys.sneak = false;
   }
+  function onClick(event) {
+    const rect = canvas.getBoundingClientRect();
+    keys.coinTarget = {
+      x: ((event.clientX - rect.left) / rect.width) * VIEW_W,
+      y: ((event.clientY - rect.top) / rect.height) * VIEW_H,
+    };
+    keys.confirm = true;
+  }
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
   window.addEventListener('blur', onBlur);
+  canvas.addEventListener('click', onClick);
   return {
     destroy() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
+      canvas.removeEventListener('click', onClick);
     },
   };
 }
@@ -70,4 +84,11 @@ export function takeAction(keys, action) {
     return true;
   }
   return false;
+}
+
+/** Read and clear the clicked coin target, if the player clicked. */
+export function takeCoinTarget(keys) {
+  const target = keys.coinTarget;
+  keys.coinTarget = null;
+  return target;
 }

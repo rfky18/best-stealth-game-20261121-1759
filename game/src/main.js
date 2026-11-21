@@ -1,21 +1,23 @@
 // Boot and the one loop: input is read every frame, the world advances in
 // fixed 1/60 s steps (several in a slow frame, none in a fast one), and the
 // renderer paints what is there. The game moves between four screens:
-// title, play, paused and game over.
+// title, play, paused and game over — and between the depot and the
+// gallery, with a level card in between.
 //
-// ?shot=cover|nearmiss|hiding|exit (with &seed=N) stages that scene
-// instead of running the loop, paints it twice and sets window.__shotReady
-// for a screenshot.
-import { BEST_KEY, TUNE } from './config.js';
-import { createWorld, resetWorld } from './world.js';
+// ?shot=cover|nearmiss|distract|exit (with &seed=N) stages that scene
+// instead of running the loop, paints it twice and sets
+// documentElement.dataset.shotReady for a screenshot.
+import { BEST_KEY, LEVELS } from './config.js';
+import { createWorld, loadLevel, resetWorld } from './world.js';
 import { updateGuard, guardCaughtPlayer } from './guard.js';
-import { updatePlayer, respawnPlayer } from './player.js';
+import { updatePlayer, updateCoin, updatePings, respawnPlayer } from './player.js';
 import {
-  createKeys, createInput, takeAction,
-  ACTION_CONFIRM, ACTION_PAUSE, ACTION_RESTART, ACTION_MUTE,
+  createKeys, createInput, takeAction, takeCoinTarget,
+  ACTION_CONFIRM, ACTION_PAUSE, ACTION_RESTART, ACTION_MUTE, ACTION_TOSS,
 } from './input.js';
 import {
-  ensureAudio, toggleMute, playFootstep, playAlarm, playShard, playUnlock, playCaught,
+  ensureAudio, toggleMute, playFootstep, playAlarm, playCoin, playShard,
+  playUnlock, playCaught,
 } from './audio.js';
 import { createRenderer, SCREEN_TITLE, SCREEN_PLAY, SCREEN_PAUSED, SCREEN_OVER } from './render.js';
 import { stageShot } from './shots.js';
@@ -23,6 +25,8 @@ import { stageShot } from './shots.js';
 /** The longest frame the loop catches up on; a longer stall is dropped. */
 const MAX_FRAME = 0.25;
 const STEP = 1 / 60;
+/** How long the level card stays up between the depot and the gallery. */
+const LEVEL_CARD_SECONDS = 2.6;
 
 const params = new URLSearchParams(window.location.search);
 const shot = params.get('shot');
@@ -54,18 +58,21 @@ function announce(message) {
   status.textContent = message;
 }
 
-/** One fixed step of the living game: player, then every guard. */
+/** One fixed step of the living game: player, coin, then every guard. */
 function stepWorld(dt, sounds) {
   const beforeShards = world.shardsTaken;
-  const stepped = updatePlayer(world, keys, dt);
+  const stepped = updatePlayer(world, keys, dt, sounds.tossAt);
   if (stepped) sounds.step(world.player.sneaking);
   if (world.shardsTaken > beforeShards) {
     sounds.shard();
-    if (world.shardsTaken >= 3) sounds.unlock();
+    if (world.shardsTaken >= LEVELS[world.levelIndex].shards.length) sounds.unlock();
   }
+  updateCoin(world, dt, sounds.coin);
+  updatePings(world, dt);
   for (let i = 0; i < world.guards.length; i++) {
     updateGuard(world.guards[i], i, world, dt, sounds.alarm);
   }
+  if (world.toastTimer > 0) world.toastTimer -= dt;
   if (world.status === 'play') {
     const caughtBy = guardCaughtPlayer(world);
     if (caughtBy) {
@@ -102,22 +109,19 @@ function runShot(name) {
 }
 
 function runGame() {
-  const input = createInput(keys);
-  // Clicking the canvas confirms too, so mouse players can start the game.
-  canvas.addEventListener('click', () => {
-    keys.confirm = true;
-  });
+  const input = createInput(keys, canvas);
   let screen = SCREEN_TITLE;
   let best = readBest();
   let accumulator = 0;
   let last = performance.now();
   let stepSounds = {
     shard: playShard, unlock: playUnlock, alarm: playAlarm,
-    caught: playCaught, step: playFootstep,
+    caught: playCaught, step: playFootstep, coin: playCoin, tossAt: null,
   };
 
   function startGame() {
     resetWorld(world);
+    takeCoinTarget(keys); // a click that started the game is not a coin toss
     accumulator = 0;
     screen = SCREEN_PLAY;
     announce('Playing. Pocket 3 ember shards, then reach the exit unseen.');
@@ -126,6 +130,15 @@ function runGame() {
   function endToTitle() {
     screen = SCREEN_TITLE;
     announce('Emberwatch: Night Shift. Press Enter to begin.');
+  }
+
+  /** Where a C press tosses a coin: a short throw ahead of Wren. */
+  function tossAhead() {
+    const p = world.player;
+    return {
+      x: p.x + Math.cos(p.facing) * 170,
+      y: p.y + Math.sin(p.facing) * 170,
+    };
   }
 
   function frame(now) {
@@ -169,13 +182,25 @@ function runGame() {
       return;
     }
 
-    // Caught is a beat, not a screen: two seconds, then Wren is back at the
-    // service door with one fewer lantern and the guards calming down.
+    // Caught is a beat, not a screen: two seconds, then Wren is back at
+    // the service door with one fewer lantern and the guards calming down.
     if (world.status === 'caught') {
       world.statusTimer += elapsed;
       if (world.statusTimer > 2) {
         respawnPlayer(world);
         world.status = 'play';
+      }
+      renderer.draw(world, SCREEN_PLAY, best);
+      return;
+    }
+
+    // The level card: a beat between floors, then the gallery loads.
+    if (world.status === 'levelcard') {
+      world.statusTimer += elapsed;
+      if (world.statusTimer > LEVEL_CARD_SECONDS) {
+        loadLevel(world, world.levelIndex + 1);
+        world.status = 'play';
+        announce(`Level ${world.levelIndex + 1}: ${LEVELS[world.levelIndex].name}.`);
       }
       renderer.draw(world, SCREEN_PLAY, best);
       return;
@@ -197,12 +222,19 @@ function runGame() {
       return;
     }
 
+    // One coin toss per click or C press, aimed at the clicked spot.
+    stepSounds.tossAt = takeCoinTarget(keys);
+    if (takeAction(keys, ACTION_TOSS)) stepSounds.tossAt = tossAhead();
+
     accumulator += elapsed;
     while (accumulator >= STEP) {
       accumulator -= STEP;
       world.time += STEP;
       stepWorld(STEP, stepSounds);
-      if (world.player.caughtFlash > 0) world.player.caughtFlash = Math.max(0, world.player.caughtFlash - STEP);
+      stepSounds.tossAt = null;
+      if (world.player.caughtFlash > 0) {
+        world.player.caughtFlash = Math.max(0, world.player.caughtFlash - STEP);
+      }
     }
     renderer.draw(world, SCREEN_PLAY, best);
   }
