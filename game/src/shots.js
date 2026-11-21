@@ -1,116 +1,173 @@
-// Staged scenes for the four screenshots. Each one poses the guards,
-// Wren, the score and the event feed exactly as the design spec
-// describes, then the page draws two frames and flags shotReady.
+// EMBERWATCH: Night Shift — shots.js
+// 4 scene staged untuk screenshot (dipicu ?shot=nama&seed=1).
+// Setiap scene membangun state lantai penuh lalu menimpa posisi,
+// suspicion, kamera, skor, event, dan toast sesuai spek scene.
+// Tidak menjalankan loop: render menggambar dua frame lalu flag shotReady.
 
-import { loadFloor, addEvent, showToast } from './world.js';
-import { rebuildCone } from './guard.js';
+import { newFloorState } from './world.js';
+import { newPlayer } from './player.js';
 
-function poseGuard(state, name, x, y, face, suspicion, mode, lastSeen) {
+function placeGuard(state, name, x, y, face, suspicion, gstate, lastSeen) {
   const g = state.guards.find((gg) => gg.name === name);
   if (!g) return;
-  g.x = x;
-  g.y = y;
-  g.face = face;
+  g.x = x; g.y = y; g.face = face;
   g.suspicion = suspicion;
-  g.mode = mode;
+  g.peak = suspicion;
+  g.state = gstate || 'patrol';
   g.lastSeen = lastSeen || null;
-  g.lookLeft = 0;
-  rebuildCone(g, state);
+  g.lookT = 0;
+  g.blindT = 99;
+  g.waiting = 0;
 }
 
-function poseWren(state, x, y, face, sneaking) {
-  state.player.x = x;
-  state.player.y = y;
-  state.player.face = face;
-  state.player.sneaking = sneaking;
-  state.player.moving = false;
-  state.player.running = false;
+function setCamera(state, id, alert, base, phase) {
+  const c = state.cameras.find((cc) => cc.id === id);
+  if (!c) return;
+  c.alert = alert;
+  if (base !== undefined) c.base = base;
+  if (phase !== undefined) c.phase = phase;
 }
 
 function setEvents(state, list) {
-  // list is newest-first: [text, at] pairs.
-  state.events = list.map(([text, at]) => ({ text, at }));
-  state.time = list[0][1];
+  state.events = list.map(([t, text]) => ({ t, text }));
 }
 
-export function stageShot(state, name) {
-  state.screen = 'playing';
-  state.toast = null;
-  if (name === 'cover') {
-    state.floor = 0;
-    loadFloor(state);
-    poseGuard(state, 'Bram', 240, 240, 0, 6, 'patrol');
-    poseGuard(state, 'Sable', 480, 190, Math.PI / 2, 0, 'patrol');
-    poseGuard(state, 'Pike', 820, 630, 0, 0, 'patrol');
-    poseGuard(state, 'Odo', 900, 220, 0, 0, 'patrol');
-    poseWren(state, 560, 440, Math.PI / 4, true);
-    state.time = 12.4;
-    setEvents(state, [['The depot hums. Nobody has seen you.', 12.4]]);
-  } else if (name === 'nearmiss') {
-    state.floor = 1;
-    loadFloor(state);
-    poseGuard(state, 'Bram', 200, 180, 0, 4, 'patrol');
-    poseGuard(state, 'Sable', 700, 120, Math.PI / 2, 0, 'patrol');
-    poseGuard(state, 'Pike', 800, 640, Math.PI, 10, 'patrol');
-    poseGuard(state, 'Odo', 940, 420, -Math.PI / 2, 18, 'patrol');
-    poseGuard(state, 'Nyx', 560, 300, Math.PI, 62, 'curious', { x: 460, y: 300 });
-    poseWren(state, 460, 300, 0, true);
-    state.shardsTaken = new Set([0]);
-    state.shardsGot = 4;
-    state.score = 650;
-    state.closeCalls = 1;
-    state.coins = 4;
-    showToast(state, 'CLOSE CALL!', 1.8);
-    setEvents(state, [
-      ['Nyx: WHAT WAS THAT?', 34.8],
-      ['Nyx is suspicious…', 31.2],
-      ['Close call — they almost had you.', 28.0],
-    ]);
-  } else if (name === 'smoke') {
-    state.floor = 2;
-    loadFloor(state);
-    poseGuard(state, 'Bram', 200, 200, 0, 6, 'patrol');
-    poseGuard(state, 'Sable', 440, 120, 0, 0, 'patrol');
-    poseGuard(state, 'Pike', 600, 660, Math.PI, 0, 'patrol');
-    poseGuard(state, 'Odo', 850, 120, Math.PI, 0, 'patrol');
-    poseGuard(state, 'Nyx', 560, 460, 0, 20, 'patrol');
-    poseGuard(state, 'Ash', 900, 450, -Math.PI / 2, 40, 'curious', { x: 660, y: 500 });
-    poseWren(state, 660, 500, Math.PI / 2, true);
-    state.smokes = [{ x: 660, y: 500, left: 2.8 }];
-    state.shardsTaken = new Set([0]);
-    state.shardsGot = 7;
-    state.score = 1100;
-    state.coins = 3;
-    state.smokesLeft = 1;
-    setEvents(state, [
-      ['Smoke out — the cones go blind.', 71.5],
-      ['Ash is suspicious…', 68.0],
-      ['Ember shard pocketed.', 64.3],
-    ]);
-  } else if (name === 'exit') {
-    state.floor = 2;
-    loadFloor(state);
-    poseGuard(state, 'Bram', 200, 200, 0, 12, 'patrol');
-    poseGuard(state, 'Sable', 440, 120, 0, 0, 'patrol');
-    poseGuard(state, 'Pike', 600, 660, Math.PI, 0, 'patrol');
-    poseGuard(state, 'Odo', 850, 120, Math.PI, 0, 'patrol');
-    poseGuard(state, 'Nyx', 560, 460, Math.PI / 2, 0, 'patrol');
-    poseGuard(state, 'Ash', 900, 380, Math.PI, 0, 'patrol');
-    poseWren(state, 972, 598, 0, true);
-    state.shardsTaken = new Set([0, 1, 2, 3]);
-    state.shardsGot = 10;
-    state.score = 1400;
-    state.coins = 2;
-    state.smokesLeft = 1;
-    state.spotted = 0;
-    setEvents(state, [
-      ['The vault door stands open.', 148.2],
-      ['Ember shard pocketed.', 145.0],
-      ['Nyx lost the trail.', 141.6],
-    ]);
+function markShardsGot(state, indices) {
+  for (const i of indices) {
+    if (state.shards[i]) state.shards[i].got = true;
   }
-  // Rebuild every cone once more so the staged poses draw correctly.
-  for (const g of state.guards) rebuildCone(g, state);
 }
 
-export const SHOT_NAMES = ['cover', 'nearmiss', 'smoke', 'exit'];
+function baseGame(floorIdx, carry) {
+  const state = newFloorState(floorIdx, carry);
+  state.best = 0;
+  state.lives = 3;
+  const player = newPlayer(state.floor);
+  return { state, player, screen: 'playing', nightT: 0, ghostAwarded: false, muted: false };
+}
+
+function sceneCover() {
+  const g = baseGame(0, null);
+  const s = g.state;
+  s.time = 12.4;
+  placeGuard(s, 'Bram', 240, 240, 0, 6);
+  placeGuard(s, 'Sable', 480, 190, 1.57, 0);
+  placeGuard(s, 'Pike', 820, 630, 0, 0);
+  placeGuard(s, 'Odo', 900, 220, 0, 0);
+  setCamera(s, 'C1', 0);
+  g.player.x = 560; g.player.y = 440;
+  g.player.face = 0.785;
+  g.player.sneaking = true;
+  setEvents(s, [[12.4, 'The depot hums. All quiet.']]);
+  return g;
+}
+
+function sceneNearmiss() {
+  const carry = {
+    score: 850, take: 900, lootTotal: 6, spotted: 0, closeCalls: 1,
+    lives: 3, totalTime: 0, nightDone: [true, false, false], events: [],
+    nearMissPct: 62,
+  };
+  const g = baseGame(1, carry);
+  const s = g.state;
+  s.time = 34.8;
+  s.coins = 4;
+  s.nearMissPct = 62;
+  markShardsGot(s, [0]); // 1 shard lantai 2 sudah dipungut
+  placeGuard(s, 'Bram', 200, 180, 0, 4);
+  placeGuard(s, 'Sable', 700, 120, 1.57, 0);
+  placeGuard(s, 'Pike', 800, 640, 3.14, 10);
+  placeGuard(s, 'Odo', 940, 420, -1.57, 18);
+  placeGuard(s, 'Nyx', 560, 300, 3.14, 62, 'curious', { x: 460, y: 300 });
+  setCamera(s, 'C1', 0);
+  g.player.x = 460; g.player.y = 300;
+  g.player.face = 0;
+  g.player.sneaking = true;
+  s.toast = 'CLOSE CALL!';
+  s.toastT = 1.0;
+  setEvents(s, [
+    [28.0, 'Close call — almost had you.'],
+    [31.2, 'Nyx is suspicious…'],
+    [34.8, 'Nyx: WHAT WAS THAT?'],
+  ]);
+  return g;
+}
+
+function sceneCamera() {
+  const carry = {
+    score: 1650, take: 1800, lootTotal: 12, spotted: 0, closeCalls: 1,
+    lives: 3, totalTime: 0, nightDone: [true, true, false], events: [],
+    nearMissPct: 62,
+  };
+  const g = baseGame(2, carry);
+  const s = g.state;
+  s.time = 71.5;
+  s.coins = 3;
+  s.smokesLeft = 1;
+  s.nearMissPct = 62;
+  markShardsGot(s, [0, 1]); // 2 shard lantai 3 sudah dipungut
+  placeGuard(s, 'Bram', 200, 200, 0, 6);
+  placeGuard(s, 'Sable', 440, 120, 0, 0);
+  placeGuard(s, 'Pike', 600, 660, 3.14, 0);
+  placeGuard(s, 'Odo', 850, 120, 3.14, 0);
+  placeGuard(s, 'Nyx', 560, 460, 0, 20);
+  placeGuard(s, 'Ash', 900, 450, -1.57, 40, 'curious', { x: 660, y: 500 });
+  // C1 menyapu ke arah asap di (660,500): fase disetel agar cone mengarah ke sana.
+  setCamera(s, 'C1', 18, undefined, 1.05);
+  setCamera(s, 'C2', 0);
+  g.player.x = 660; g.player.y = 500;
+  g.player.face = 1.57;
+  g.player.sneaking = true;
+  s.smokes.push({ x: 660, y: 500, r: 72, ttl: 3.5, t: 0.7 });
+  if (s.laser) s.laser.clock = 3.0; // laser MATI (garis putus-putus redup)
+  setEvents(s, [
+    [64.3, 'Ember shard pocketed.'],
+    [68.0, 'Ash is suspicious…'],
+    [71.5, 'Smoke out — cones go blind.'],
+  ]);
+  return g;
+}
+
+function sceneExit() {
+  const carry = {
+    score: 2250, take: 2400, lootTotal: 16, spotted: 0, closeCalls: 1,
+    lives: 3, totalTime: 0, nightDone: [true, true, true], events: [],
+    nearMissPct: 62,
+  };
+  const g = baseGame(2, carry);
+  const s = g.state;
+  s.time = 148.2;
+  s.coins = 2;
+  s.smokesLeft = 1;
+  s.nearMissPct = 62;
+  markShardsGot(s, [0, 1, 2, 3, 4, 5]); // semua shard lantai 3
+  s.floorDone = true;
+  placeGuard(s, 'Bram', 200, 200, 0, 12);
+  placeGuard(s, 'Sable', 440, 120, 0, 0);
+  placeGuard(s, 'Pike', 600, 660, 3.14, 0);
+  placeGuard(s, 'Odo', 850, 120, 3.14, 0);
+  placeGuard(s, 'Nyx', 560, 460, 1.57, 0);
+  placeGuard(s, 'Ash', 900, 380, 3.14, 0);
+  setCamera(s, 'C1', 0, -2.36); // hadap kiri-atas
+  setCamera(s, 'C2', 0, 1.57); // hadap bawah
+  g.player.x = 972; g.player.y = 598;
+  g.player.face = 0;
+  g.player.sneaking = true;
+  if (s.laser) s.laser.clock = 0.5; // laser MENYALA (solid + glow)
+  setEvents(s, [
+    [141.6, 'Nyx lost the trail.'],
+    [145.0, 'Ember shard pocketed.'],
+    [148.2, 'The vault door stands open.'],
+  ]);
+  return g;
+}
+
+export function stageShot(name) {
+  switch (name) {
+    case 'cover': return sceneCover();
+    case 'nearmiss': return sceneNearmiss();
+    case 'camera': return sceneCamera();
+    case 'exit': return sceneExit();
+    default: return null;
+  }
+}

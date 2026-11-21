@@ -4,63 +4,79 @@
 [![rank](https://make.fun/badge/best-stealth-game-20261121-1759/rfky18/best-stealth-game-20261121-1759/rank.svg)](https://make.fun/bounty/best-stealth-game-20261121-1759/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=best-stealth-game-20261121-1759)
 [![reward](https://make.fun/badge/best-stealth-game-20261121-1759/rfky18/best-stealth-game-20261121-1759/reward.svg)](https://make.fun/bounty/best-stealth-game-20261121-1759?utm_source=github&utm_medium=readme&utm_campaign=best-stealth-game-20261121-1759)
 
-You are **Wren**, a shadow courier. On a lantern-lit night you slip through three floors of a guarded house — **The Depot**, **The Gallery**, **The Vault** — pocket all ten ember shards, and leave through the green **EXIT** without ever being seen. Three lives. One ghost bonus if nobody ever spots you.
+A top-down 2D stealth game, built for the make.fun bounty
+[best-stealth-game-20261121-1759](https://make.fun/bounty/best-stealth-game-20261121-1759).
+
+You are **Wren**, a shadow courier. Slip through three nights in the
+lantern-lit building — The Depot, The Gallery, The Vault — pocket all
+**16 ember shards** (worth **$150 each, $2,400 total**), and reach the
+green **EXIT** unseen. Guards patrol fixed routes with vision cones.
+Security **cameras** sweep blue cones. **Tripwires** and a timed
+**laser** guard the vault. Get spotted and the alarm rises; get caught
+three times and the night ends.
 
 ## How to play
 
-- **WASD / arrow keys** — move. **SHIFT** — sneak (slow, quiet).
-- **Click the floor / C** — toss a coin (5 per floor, max range 240). Guards in earshot walk over to investigate the clink.
-- **Q** — smoke bomb at your feet (2 per floor, radius 72, lasts 3.5 s). Guards cannot see you inside smoke, or through it.
-- **E** — douse the nearest lit lamp within 100 px. It stays dark for the rest of the floor.
+- **WASD / arrow keys** — move (running is loud). **SHIFT** — sneak (slow, silent).
+- **CLICK** on the floor (or **C**) — throw a coin; guards in earshot walk over to check it. 5 coins per night.
+- **Q** — smoke bomb at your feet (2 per night). Guards and cameras cannot see through smoke.
+- **E** — douse the nearest lamp (within 100 px). It stays out for the rest of the night.
 - **P / Esc** — pause. **R** — restart. **M** — mute. **Enter / Space** — start / confirm.
 
-## Detection
+Detection is gradual and recoverable: a guard's suspicion rises while
+it sees you (faster in lamplight, slower in shadow), turns curious at
+60, and chases at 92. Break line of sight and suspicion falls again.
+A close call — suspicion over 45 that fades below 15 without a chase —
+earns +50 points and a NEAR MISS %. Cameras raise their own alert;
+at 100% they sound a camera alarm and every guard converges on your
+last seen spot. Finish a night unseen and the **GHOST +500** bonus is
+yours.
 
-Every guard patrols a fixed loop and sweeps their vision cone while waiting at a waypoint. Suspicion rises while a guard sees you — faster in the open and in lamplight, slower in shadow — and falls when you break sight. At 60 a guard grows curious and comes to look; at 92 they chase. Get caught and you lose a life and wake up at the entrance with the guards calmed.
-
-- **Close call**: suspicion climbs past 45, then fades below 15 without a chase — **+50 pts** and a toast.
-- **Tripwires** (floors 2 and 3): step on one and every guard on the floor gets +25 suspicion and converges on the wire. It needs 8 s to re-arm.
-- **Running** is loud: guards nearby hear your steps.
-- **Shards** are worth 100 pts each; finishing a floor is +200. **GHOST +500** if you win with zero spotted.
-
-## The detection panel
-
-The right-hand panel is alive the whole run: a big status word (**UNSEEN / SUSPICIOUS ? / ALERT! / CHASED!**) with advice, an **ALARM** bar, a **VISIBILITY** bar with your live exposure (in shadow, in the open, in lamplight, in smoke), a **NOISE** readout, loot / spotted / goal / score, the **GHOST** line, a per-guard suspicion list, a legend, controls, and the last three events under **WHAT HAPPENED** — including a guard's *"WHAT WAS THAT?"* the moment they spot you.
+The right panel shows everything live: detection status, the four
+segment **alarm meter** (CALM / UNEASY / HUNTED / ALARM), visibility
+and noise, near-miss %, loot and TAKE $, the **campaign tracker**
+(Night 1/2/3), every guard's suspicion, every **camera's** alert, a
+**tactical map**, a legend, and the last two events.
 
 ## Run it
 
 ```sh
 node serve.ts
-# open http://localhost:8080
 ```
 
-No build step, no network requests: the game is plain files under `game/`, and all sound is synthesized with WebAudio.
+Then open <http://localhost:8080/> in a desktop browser. No network
+requests: the game is plain HTML + ES modules + WebAudio, all local.
 
 ## Files
 
 | File | Job |
 | --- | --- |
-| `game/src/config.js` | Constants, the three floors, tuning, scoring |
-| `game/src/world.js` | Geometry: line of sight, raycasts, circle collision, shadow / lamp / smoke tests, exposure, tripwires, world state, event feed, toasts |
-| `game/src/guard.js` | Patrols, vision cones, suspicion, the patrol / curious / chase machine, coin hearing, tripwire response, being caught, highest suspicion |
-| `game/src/player.js` | Wren's movement, coin throws, smoke bombs, dousing lamps, shards, score, the exit, respawning |
+| `game/index.html` | Canvas + screen-reader status line, loads the game |
+| `game/src/config.js` | Constants, the three floors, cameras, laser, tuning, scoring, loot value |
+| `game/src/world.js` | Geometry (line of sight, raycast, circle collision), shadow/lamp/smoke tests, exposure, tripwire, world state, event feed, toast |
+| `game/src/guard.js` | Patrol, vision cone, suspicion, guard state machine, hearing coins, tripwire response, being caught, highest suspicion |
+| `game/src/camera.js` | Security cameras (sweeping cone, alert, camera alarm) + laser beam (on/off cycle, trip) |
+| `game/src/player.js` | Wren's movement, coin throw, smoke bomb, dousing lamps, shards, score, TAKE $, exit, respawn |
 | `game/src/input.js` | Keyboard + mouse, edge-triggered actions |
 | `game/src/audio.js` | All synthesized WebAudio sounds |
-| `game/src/render.js` | Everything drawn on the canvas, the HUD, and the screens |
-| `game/src/panel.js` | The right-hand detection panel only |
-| `game/src/shots.js` | The 4 staged scenes for the screenshots |
-| `game/src/main.js` | Boot, the fixed-step 1/60 s loop, screens, the one-time GHOST bonus, best score |
-| `game/index.html` | The canvas and a screen-reader status line |
-| `main.ts` | The hand-in program (copies game + screenshots, writes dossier.json) |
-| `serve.ts` | A small static dev server for `game/` |
+| `game/src/render.js` | All canvas drawing + HUD + title / night / win / game-over screens |
+| `game/src/panel.js` | Right-hand detection panel only (alarm meter, campaign, cameras, tactical map) |
+| `game/src/shots.js` | The 4 staged scenes for screenshots |
+| `game/src/main.js` | Boot, fixed-step 1/60 s loop, screens, one-time GHOST bonus, best score |
+| `main.ts` | Hand-in program: copies game/ + screenshots/ to the output dir and writes dossier.json |
+| `serve.ts` | Small static dev server for the game (port 8080) |
+| `vendor/makefun-game.ts` | make.fun dossier builder (from the kit, unmodified) |
 
 ## Screenshots
 
-1. **Cover** — The Depot: Wren hidden in the middle shadow while Bram's cone sweeps past.
-2. **Near miss** — The Gallery: Nyx is suspicious in the lamplight, a close call just banked.
-3. **Smoke** — The Vault: Wren inside a smoke cloud as Ash closes in.
-4. **Exit** — The Vault: all ten shards pocketed, the green EXIT open, nobody spotted.
+All four are real renders of the game itself, staged in code
+(`game/src/shots.js`, `?shot=name&seed=1`):
+
+1. `1-cover.jpg` — Night 1, The Depot: Wren hidden in shadow, guard cones, the sweeping blue camera cone, crates for cover, and the green EXIT.
+2. `2-nearmiss.jpg` — Night 2: Nyx suspicious at 62, Wren caught in lamplight, CLOSE CALL! toast, NEAR MISS 62%, alarm HUNTED.
+3. `3-camera.jpg` — Night 3: Wren inside smoke as camera C1 sweeps toward it, laser off, Ash suspicious.
+4. `4-exit.jpg` — Night 3: all 16 shards pocketed (TAKE $2,400), EXIT open, laser on, Wren slipping out unseen.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT

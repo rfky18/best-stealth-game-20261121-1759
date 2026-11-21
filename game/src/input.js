@@ -1,65 +1,77 @@
-// Keyboard + mouse input. Keys are held in a live set; actions that
-// fire once per press (coin, smoke, douse, pause, restart, mute,
-// confirm) go through an edge-triggered queue the main loop drains.
+// EMBERWATCH: Night Shift — input.js
+// Keyboard + mouse, aksi edge-triggered (sekali per tekan).
 
-export function createInput(canvas, onCoinAt) {
-  const keys = new Set();
-  const queue = [];
-  const mouse = { x: 0, y: 0, inside: false };
-
-  const ACTION_KEYS = {
-    KeyC: 'coin',
-    KeyQ: 'smoke',
-    KeyE: 'douse',
-    KeyP: 'pause',
-    Escape: 'pause',
-    KeyR: 'restart',
-    KeyM: 'mute',
-    Enter: 'confirm',
-    Space: 'confirm',
-  };
-
-  function onKeyDown(e) {
-    if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
-    if (e.repeat) return;
-    keys.add(e.code);
-    const act = ACTION_KEYS[e.code];
-    if (act) queue.push(act);
-  }
-
-  function onKeyUp(e) {
-    keys.delete(e.code);
-  }
-
-  function onMouseMove(e) {
-    const r = canvas.getBoundingClientRect();
-    mouse.x = ((e.clientX - r.left) / r.width) * canvas.width;
-    mouse.y = ((e.clientY - r.top) / r.height) * canvas.height;
-    mouse.inside = true;
-  }
-
-  function onClick(e) {
-    onMouseMove(e);
-    queue.push('coin');
-    if (onCoinAt) onCoinAt(mouse.x, mouse.y);
-  }
-
-  function onBlur() {
-    keys.clear();
-  }
-
-  window.addEventListener('keydown', onKeyDown);
-  window.addEventListener('keyup', onKeyUp);
-  window.addEventListener('blur', onBlur);
-  canvas.addEventListener('mousemove', onMouseMove);
-  canvas.addEventListener('click', onClick);
-
-  return {
+export function createInput(canvas, onAction) {
+  const keys = {};
+  const input = {
     keys,
-    mouse,
-    drain() {
-      const out = queue.splice(0, queue.length);
-      return out;
-    },
+    dx: 0, dy: 0, sneak: false,
+    mouse: { x: 0, y: 0, inside: false },
+    consumeClick: null, // {x, y} klik yang belum diproses
   };
+
+  function recompute() {
+    let dx = 0, dy = 0;
+    if (keys['KeyA'] || keys['ArrowLeft']) dx -= 1;
+    if (keys['KeyD'] || keys['ArrowRight']) dx += 1;
+    if (keys['KeyW'] || keys['ArrowUp']) dy -= 1;
+    if (keys['KeyS'] || keys['ArrowDown']) dy += 1;
+    input.dx = dx;
+    input.dy = dy;
+    input.sneak = !!(keys['ShiftLeft'] || keys['ShiftRight']);
+  }
+
+  function edge(code, fn) {
+    if (!keys[code]) {
+      keys[code] = true;
+      fn();
+    }
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
+      e.preventDefault();
+    }
+    if (e.repeat) { recompute(); return; }
+    switch (e.code) {
+      case 'Enter':
+      case 'Space': edge(e.code, () => onAction('confirm')); break;
+      case 'KeyP':
+      case 'Escape': edge(e.code, () => onAction('pause')); break;
+      case 'KeyR': edge(e.code, () => onAction('restart')); break;
+      case 'KeyM': edge(e.code, () => onAction('mute')); break;
+      case 'KeyQ': edge(e.code, () => onAction('smoke')); break;
+      case 'KeyE': edge(e.code, () => onAction('douse')); break;
+      case 'KeyC': edge(e.code, () => onAction('coin')); break;
+      default: keys[e.code] = true; break;
+    }
+    recompute();
+  });
+
+  window.addEventListener('keyup', (e) => {
+    keys[e.code] = false;
+    recompute();
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    const r = canvas.getBoundingClientRect();
+    input.mouse.x = (e.clientX - r.left) * (canvas.width / r.width);
+    input.mouse.y = (e.clientY - r.top) * (canvas.height / r.height);
+    input.mouse.inside = true;
+  });
+
+  canvas.addEventListener('mousedown', (e) => {
+    const r = canvas.getBoundingClientRect();
+    const x = (e.clientX - r.left) * (canvas.width / r.width);
+    const y = (e.clientY - r.top) * (canvas.height / r.height);
+    input.consumeClick = { x, y };
+    onAction('click', { x, y });
+  });
+
+  window.addEventListener('blur', () => {
+    for (const k of Object.keys(keys)) keys[k] = false;
+    recompute();
+  });
+
+  return input;
 }

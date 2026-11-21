@@ -1,66 +1,128 @@
-// Emberwatch: Night Shift — tuning, floors and scoring.
-// Every number here comes from the design spec; nothing is borrowed
-// from any earlier build.
+// EMBERWATCH: Night Shift — config.js
+// Konstanta, tiga lantai, kamera, laser, tuning, skor, nilai loot.
+// Satu-satunya sumber kebenaran untuk data level; tidak ada logika di sini.
 
-export const VIEW_W = 1280;
-export const VIEW_H = 720;
+export const W = 1280;
+export const H = 720;
 export const HUD_H = 56;
 export const PANEL_X = 1008;
 export const PANEL_W = 272;
 export const PLAY_W = 1008;
+export const PLAY_TOP = 56;
+export const PLAY_BOTTOM = 720;
 
-export const WALK_SPEED = 150;
-export const SNEAK_SPEED = 88;
+export const TILE = 40;
+
+// Gerak Wren
+export const WALK_SPEED = 150; // px/detik (berlari, berisik)
+export const SNEAK_SPEED = 88; // px/detik (Shift, senyap)
 export const PLAYER_R = 12;
-
-export const COIN_THROW_MAX = 240;
-export const COIN_FLIGHT = 0.35;
-export const COIN_HEAR_R = 280;
-export const COINS_PER_FLOOR = 5;
-
-export const SMOKE_R = 72;
-export const SMOKE_TIME = 3.5;
-export const SMOKES_PER_FLOOR = 2;
-
-export const DOUSE_RANGE = 100;
 export const PICKUP_R = 26;
 
+// Gadget
+export const COIN_MAX = 5;
+export const COIN_THROW_MAX = 240;
+export const COIN_FLY_TIME = 0.35;
+export const COIN_HEAR_R = 280;
+export const SMOKE_MAX = 2;
+export const SMOKE_R = 72;
+export const SMOKE_TIME = 3.5;
+export const DOUSE_R = 100;
+
+// Nyawa & skor
+export const LIVES_MAX = 3;
+export const SHARD_PTS = 100;
+export const SHARD_VALUE = 150; // dolar per shard
+export const CLOSE_CALL_PTS = 50;
+export const FLOOR_PTS = 200;
+export const GHOST_PTS = 500;
+export const TOTAL_SHARDS = 16;
+export const TOTAL_TAKE = TOTAL_SHARDS * SHARD_VALUE; // $2400
+
+// Guard
 export const CONE_RANGE = 210;
 export const CONE_HALF = 0.61;
-export const CONE_RAYS = 64;
-export const CURIOUS_SPEED = 80;
+export const CONE_SLICES = 64;
+export const GUARD_R = 17;
+export const CATCH_R = 30;
 export const CHASE_SPEED = 118;
 export const CHASE_SPEED_VAULT = 130;
-export const CATCH_R = 30;
-export const LOOK_TIME = 1.4;
-export const FORGET_TIME = 4;
+export const CURIOUS_SPEED = 80;
+export const SUSP_LOOKBACK = 4; // detik tanpa melihat sebelum turun tahap
+export const SUSP_DECAY = 14; // per detik saat tidak terlihat
+export const SUSP_BRIGHT = 55;
+export const SUSP_SHADOW = 16;
+export const SUSP_LAMP = 14;
+export const SUSP_CLOSE = 30; // jarak < 70
+export const SUSP_RUN = 18;
+export const SUSP_FOOTSTEP = 22; // lari dalam radius 95
+export const FOOTSTEP_R = 95;
+export const SUSP_COIN_MIN = 28;
+export const SUSP_WIRE_ALL = 25;
+export const SUSP_CAM_ALARM = 25;
+export const SUSP_LASER_ALL = 20;
+export const SUSP_CALM_RESPAWN = 18;
 
-export const SUSPECT_CURIOUS = 60;
-export const SUSPECT_CHASE = 92;
-export const CLOSE_CALL_HIGH = 45;
-export const CLOSE_CALL_LOW = 15;
+// Kamera
+export const CAM_RANGE = 190;
+export const CAM_HALF = 0.42;
+export const CAM_SLICES = 48;
+export const CAM_SWEEP = 0.55; // radian, +/- dari arah dasar
+export const CAM_PERIOD = 4; // detik per ayunan penuh
+export const CAM_ALERT_LAMP = 45;
+export const CAM_ALERT_OPEN = 30;
+export const CAM_ALERT_SHADOW = 10;
+export const CAM_ALERT_DECAY = 12;
 
-export const TRIP_R = 14;
-export const TRIP_BOOST = 25;
-export const TRIP_COOLDOWN = 8;
+// Laser (lantai 3)
+export const LASER_ON = 2.2;
+export const LASER_OFF = 1.8;
+export const LASER_TRIP_R = 12;
+export const LASER_COOLDOWN = 3;
 
-export const SCORE_SHARD = 100;
-export const SCORE_CLOSE_CALL = 50;
-export const SCORE_FLOOR = 200;
-export const SCORE_GHOST = 500;
+// Tripwire
+export const WIRE_TRIP_R = 14;
+export const WIRE_REARM = 8;
 
-export const FLOOR_CARD_TIME = 2.6;
-export const CAUGHT_FLASH_TIME = 1.4;
+// Warna
+export const COLORS = {
+  bg: '#0a1120',
+  floorA: '#101a30',
+  floorB: '#0d1628',
+  grid: '#16223d',
+  panelBg: '#0d1526',
+  panelLine: '#1b2a4a',
+  sectionTitle: '#8fa3c8',
+  text: '#e8eefc',
+  textDim: '#c7d2e8',
+  gold: '#ffd60a',
+  barBg: '#22314f',
+  green: '#2fd47a',
+  red: '#ff5252',
+  orange: '#ff9f43',
+  blue: '#74c0fc',
+  teal: '#2dd4bf',
+};
 
+// Dinding luar (selalu sama di semua lantai)
+export function outerWalls() {
+  return [
+    { x: 0, y: 56, w: 1008, h: 14 },
+    { x: 0, y: 706, w: 1008, h: 14 },
+    { x: 0, y: 56, w: 14, h: 664 },
+    { x: 994, y: 56, w: 14, h: 664 },
+  ];
+}
+
+// Arah hadap dalam radian: 0 kanan, 1.57 bawah, 3.14 kiri, -1.57 atas.
 export const FLOORS = [
   {
+    night: 1,
     name: 'THE DEPOT',
-    sub: 'Four guards, wide lanes. Learn the cones, then slip past them.',
+    sub: 'Four guards, one camera, wide lanes. Learn the cones, then slip past them.',
+    start: { x: 64, y: 648 },
+    exit: { x: 956, y: 100, w: 48, h: 76 },
     walls: [
-      { x: 0, y: 56, w: 1008, h: 14 },
-      { x: 0, y: 706, w: 1008, h: 14 },
-      { x: 0, y: 56, w: 14, h: 664 },
-      { x: 994, y: 56, w: 14, h: 664 },
       { x: 400, y: 170, w: 14, h: 230 },
       { x: 560, y: 330, w: 300, h: 14 },
       { x: 860, y: 400, w: 14, h: 170 },
@@ -88,27 +150,27 @@ export const FLOORS = [
       { x: 920, y: 360, r: 110 },
       { x: 200, y: 590, r: 105 },
     ],
-    wires: [],
     shards: [
       { x: 300, y: 150 }, { x: 860, y: 480 }, { x: 920, y: 600 },
+      { x: 180, y: 650 }, { x: 700, y: 300 },
     ],
-    exit: { x: 956, y: 100, w: 48, h: 76 },
-    start: { x: 64, y: 648 },
+    cameras: [{ id: 'C1', x: 700, y: 560, base: -1.57 }],
+    wires: [],
+    laser: null,
     guards: [
-      { name: 'Bram', color: '#ff9f43', path: [{ x: 110, y: 240 }, { x: 380, y: 240 }], wait: 1.6, speed: 58, face: 0 },
-      { name: 'Sable', color: '#e17055', path: [{ x: 480, y: 130 }, { x: 480, y: 300 }], wait: 1.2, speed: 52, face: Math.PI / 2 },
-      { name: 'Pike', color: '#fdcb6e', path: [{ x: 500, y: 630 }, { x: 920, y: 630 }], wait: 1.8, speed: 62, face: 0 },
-      { name: 'Odo', color: '#fd79a8', path: [{ x: 900, y: 150 }, { x: 960, y: 150 }, { x: 960, y: 220 }, { x: 900, y: 220 }], wait: 1.0, speed: 55, face: 0 },
+      { name: 'Bram', color: '#ff9f43', wps: [[110, 240], [380, 240]], pause: 1.6, speed: 58, face: 0 },
+      { name: 'Sable', color: '#e17055', wps: [[480, 130], [480, 300]], pause: 1.2, speed: 52, face: 1.57 },
+      { name: 'Pike', color: '#fdcb6e', wps: [[500, 630], [920, 630]], pause: 1.8, speed: 62, face: 0 },
+      { name: 'Odo', color: '#fd79a8', wps: [[900, 150], [960, 150], [960, 220], [900, 220]], pause: 1.0, speed: 55, face: 0 },
     ],
   },
   {
+    night: 2,
     name: 'THE GALLERY',
-    sub: 'A tripwire guards the middle hall. Go around, or trip it loud.',
+    sub: 'A tripwire guards the middle hall. A camera watches the top. Go around, or trip it loud.',
+    start: { x: 64, y: 648 },
+    exit: { x: 956, y: 300, w: 48, h: 76 },
     walls: [
-      { x: 0, y: 56, w: 1008, h: 14 },
-      { x: 0, y: 706, w: 1008, h: 14 },
-      { x: 0, y: 56, w: 14, h: 664 },
-      { x: 994, y: 56, w: 14, h: 664 },
       { x: 300, y: 150, w: 14, h: 220 },
       { x: 700, y: 280, w: 14, h: 240 },
       { x: 450, y: 200, w: 340, h: 14 },
@@ -120,8 +182,7 @@ export const FLOORS = [
       { x: 600, y: 300 }, { x: 652, y: 300 }, { x: 600, y: 352 }, { x: 652, y: 352 },
       { x: 150, y: 200 }, { x: 202, y: 200 },
       { x: 850, y: 480 }, { x: 902, y: 480 },
-      { x: 300, y: 600 }, { x: 352, y: 600 },
-      { x: 850, y: 140 },
+      { x: 300, y: 600 }, { x: 352, y: 600 }, { x: 850, y: 140 },
     ],
     shadows: [
       { x: 90, y: 110, w: 170, h: 90 },
@@ -140,25 +201,25 @@ export const FLOORS = [
     wires: [{ x1: 300, y1: 380, x2: 620, y2: 380 }],
     shards: [
       { x: 180, y: 640 }, { x: 900, y: 160 }, { x: 700, y: 470 },
+      { x: 120, y: 300 }, { x: 850, y: 600 },
     ],
-    exit: { x: 956, y: 300, w: 48, h: 76 },
-    start: { x: 64, y: 648 },
+    cameras: [{ id: 'C1', x: 600, y: 140, base: 1.57 }],
+    laser: null,
     guards: [
-      { name: 'Bram', color: '#ff9f43', path: [{ x: 120, y: 180 }, { x: 280, y: 180 }], wait: 1.4, speed: 66, face: 0 },
-      { name: 'Sable', color: '#e17055', path: [{ x: 480, y: 120 }, { x: 860, y: 120 }], wait: 1.0, speed: 70, face: 0 },
-      { name: 'Pike', color: '#fdcb6e', path: [{ x: 480, y: 640 }, { x: 920, y: 640 }], wait: 1.6, speed: 72, face: 0 },
-      { name: 'Odo', color: '#fd79a8', path: [{ x: 940, y: 300 }, { x: 940, y: 540 }], wait: 1.0, speed: 68, face: Math.PI / 2 },
-      { name: 'Nyx', color: '#a29bfe', path: [{ x: 360, y: 260 }, { x: 560, y: 260 }, { x: 560, y: 460 }, { x: 360, y: 460 }], wait: 0.8, speed: 64, face: 0 },
+      { name: 'Bram', color: '#ff9f43', wps: [[120, 180], [280, 180]], pause: 1.4, speed: 66, face: 0 },
+      { name: 'Sable', color: '#e17055', wps: [[480, 120], [860, 120]], pause: 1.0, speed: 70, face: 0 },
+      { name: 'Pike', color: '#fdcb6e', wps: [[480, 640], [920, 640]], pause: 1.6, speed: 72, face: 0 },
+      { name: 'Odo', color: '#fd79a8', wps: [[940, 300], [940, 540]], pause: 1.0, speed: 68, face: 1.57 },
+      { name: 'Nyx', color: '#a29bfe', wps: [[360, 260], [560, 260], [560, 460], [360, 460]], pause: 0.8, speed: 64, face: 0 },
     ],
   },
   {
+    night: 3,
     name: 'THE VAULT',
-    sub: 'Six guards, two tripwires, four embers. The vault pays for patience.',
+    sub: 'Six guards, two cameras, two tripwires, one laser, six embers. The vault pays for patience.',
+    start: { x: 64, y: 648 },
+    exit: { x: 956, y: 560, w: 48, h: 76 },
     walls: [
-      { x: 0, y: 56, w: 1008, h: 14 },
-      { x: 0, y: 706, w: 1008, h: 14 },
-      { x: 0, y: 56, w: 14, h: 664 },
-      { x: 994, y: 56, w: 14, h: 664 },
       { x: 280, y: 120, w: 14, h: 280 },
       { x: 560, y: 120, w: 14, h: 200 },
       { x: 700, y: 400, w: 14, h: 220 },
@@ -170,8 +231,7 @@ export const FLOORS = [
       { x: 480, y: 180 }, { x: 532, y: 180 }, { x: 480, y: 232 },
       { x: 760, y: 580 }, { x: 812, y: 580 },
       { x: 120, y: 300 }, { x: 172, y: 300 },
-      { x: 640, y: 590 }, { x: 692, y: 590 },
-      { x: 940, y: 340 },
+      { x: 640, y: 590 }, { x: 692, y: 590 }, { x: 940, y: 340 },
     ],
     shadows: [
       { x: 80, y: 110, w: 160, h: 90 },
@@ -192,32 +252,23 @@ export const FLOORS = [
       { x1: 760, y1: 380, x2: 760, y2: 620 },
     ],
     shards: [
-      { x: 200, y: 160 }, { x: 620, y: 240 }, { x: 830, y: 540 }, { x: 930, y: 640 },
+      { x: 200, y: 160 }, { x: 620, y: 240 }, { x: 830, y: 540 },
+      { x: 930, y: 640 }, { x: 120, y: 650 }, { x: 700, y: 120 },
     ],
-    exit: { x: 956, y: 560, w: 48, h: 76 },
-    start: { x: 64, y: 648 },
+    cameras: [
+      { id: 'C1', x: 480, y: 420, base: 0 },
+      { id: 'C2', x: 880, y: 300, base: 3.14 },
+    ],
+    laser: { x1: 450, y1: 470, x2: 700, y2: 470 },
     guards: [
-      { name: 'Bram', color: '#ff9f43', path: [{ x: 120, y: 200 }, { x: 260, y: 200 }], wait: 1.2, speed: 78, face: 0 },
-      { name: 'Sable', color: '#e17055', path: [{ x: 340, y: 120 }, { x: 540, y: 120 }], wait: 1.0, speed: 82, face: 0 },
-      { name: 'Pike', color: '#fdcb6e', path: [{ x: 340, y: 660 }, { x: 900, y: 660 }], wait: 1.4, speed: 84, face: 0 },
-      { name: 'Odo', color: '#fd79a8', path: [{ x: 760, y: 120 }, { x: 940, y: 120 }], wait: 0.9, speed: 80, face: 0 },
-      { name: 'Nyx', color: '#a29bfe', path: [{ x: 420, y: 360 }, { x: 680, y: 360 }, { x: 680, y: 560 }, { x: 420, y: 560 }], wait: 0.7, speed: 76, face: 0 },
-      { name: 'Ash', color: '#74c0fc', path: [{ x: 900, y: 300 }, { x: 900, y: 600 }], wait: 0.8, speed: 88, face: Math.PI / 2 },
+      { name: 'Bram', color: '#ff9f43', wps: [[120, 200], [260, 200]], pause: 1.2, speed: 78, face: 0 },
+      { name: 'Sable', color: '#e17055', wps: [[340, 120], [540, 120]], pause: 1.0, speed: 82, face: 0 },
+      { name: 'Pike', color: '#fdcb6e', wps: [[340, 660], [900, 660]], pause: 1.4, speed: 84, face: 0 },
+      { name: 'Odo', color: '#fd79a8', wps: [[760, 120], [940, 120]], pause: 0.9, speed: 80, face: 0 },
+      { name: 'Nyx', color: '#a29bfe', wps: [[420, 360], [680, 360], [680, 560], [420, 560]], pause: 0.7, speed: 76, face: 0 },
+      { name: 'Ash', color: '#74c0fc', wps: [[900, 300], [900, 600]], pause: 0.8, speed: 88, face: 1.57 },
     ],
   },
 ];
 
-export const TOTAL_SHARDS = FLOORS.reduce((n, f) => n + f.shards.length, 0);
-
-export function clamp(v, lo, hi) {
-  return v < lo ? lo : v > hi ? hi : v;
-}
-
-export function dist(ax, ay, bx, by) {
-  return Math.hypot(ax - bx, ay - by);
-}
-
-export function fmtTime(sec) {
-  const s = Math.max(0, Math.floor(sec));
-  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
-}
+export const NIGHT_CARD_TIME = 2.6; // detik kartu antar malam

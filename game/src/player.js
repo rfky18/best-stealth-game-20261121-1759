@@ -1,172 +1,215 @@
-// Wren, the player: movement, coin throws, smoke bombs, dousing
-// lamps, picking up shards, scoring, the exit, and respawning.
+// EMBERWATCH: Night Shift — player.js
+// Gerak Wren, lempar koin, bom asap, padamkan lampu, pungut shard,
+// skor, TAKE $, pintu EXIT, respawn setelah tertangkap.
 
 import {
-  FLOORS, WALK_SPEED, SNEAK_SPEED, PLAYER_R, COIN_THROW_MAX,
-  COIN_FLIGHT, COINS_PER_FLOOR, SMOKE_R, SMOKE_TIME, SMOKES_PER_FLOOR,
-  DOUSE_RANGE, PICKUP_R, SCORE_SHARD, SCORE_FLOOR,
-  clamp, dist,
+  WALK_SPEED, SNEAK_SPEED, PLAYER_R, PICKUP_R,
+  COIN_THROW_MAX, COIN_FLY_TIME, COIN_HEAR_R,
+  SMOKE_R, SMOKE_TIME, DOUSE_R,
+  SHARD_PTS, SHARD_VALUE, CLOSE_CALL_PTS, FLOOR_PTS,
 } from './config.js';
 import {
-  moveCircle, inSmoke, lampAt, exitOpen, addEvent, tripwireAt,
-  showToast,
+  dist, clamp, collideCircle, inSmoke, lampAt, inShadow,
+  addEvent, showToast, shardsLeft, exitIsOpen,
 } from './world.js';
-import { guardsHearCoin, guardsTripwire, calmGuards } from './guard.js';
+import { guardsHearCoin } from './guard.js';
 
-// Move Wren for one fixed step. `keys` is the live key set.
-export function tickPlayer(state, keys, dt, sfx) {
-  const p = state.player;
-  let mx = 0;
-  let my = 0;
-  if (keys.has('KeyA') || keys.has('ArrowLeft')) mx -= 1;
-  if (keys.has('KeyD') || keys.has('ArrowRight')) mx += 1;
-  if (keys.has('KeyW') || keys.has('ArrowUp')) my -= 1;
-  if (keys.has('KeyS') || keys.has('ArrowDown')) my += 1;
-  p.sneaking = keys.has('ShiftLeft') || keys.has('ShiftRight');
-  const len = Math.hypot(mx, my);
-  p.moving = len > 0;
-  p.running = p.moving && !p.sneaking;
-  if (p.moving) {
-    const speed = p.sneaking ? SNEAK_SPEED : WALK_SPEED;
-    const nx = (mx / len) * speed * dt;
-    const ny = (my / len) * speed * dt;
-    const moved = moveCircle(state, p.x, p.y, PLAYER_R, nx, ny);
-    p.x = moved.x;
-    p.y = moved.y;
-    p.face = Math.atan2(ny, nx);
-    // Footsteps: a soft tick and a small ripple, faster when running.
-    p.stepAt -= dt;
-    if (p.stepAt <= 0) {
-      if (sfx) sfx.step(p.sneaking);
+export function newPlayer(floor) {
+  return {
+    x: floor.start.x,
+    y: floor.start.y,
+    face: 0,
+    sneaking: false,
+    running: false,
+    moving: false,
+    rippleT: 0,
+    stepT: 0,
+  };
+}
+
+// Gerak dari input {dx, dy} ternormalisasi; sneaking dari Shift.
+export function updatePlayer(player, input, state, dt, sfx) {
+  const mag = Math.hypot(input.dx, input.dy);
+  player.moving = mag > 0.01;
+  player.sneaking = !!input.sneak;
+  player.running = player.moving && !player.sneaking;
+  if (player.moving) {
+    const speed = player.sneaking ? SNEAK_SPEED : WALK_SPEED;
+    const nx = input.dx / (mag || 1), ny = input.dy / (mag || 1);
+    player.face = Math.atan2(ny, nx);
+    player.x += nx * speed * dt;
+    player.y += ny * speed * dt;
+    collideCircle(player, PLAYER_R, state.blocks);
+    player.x = clamp(player.x, 14 + PLAYER_R, 994 - PLAYER_R);
+    player.y = clamp(player.y, 56 + 14 + PLAYER_R, 706 - PLAYER_R);
+    // Riak langkah + bunyi kaki (lebih pelan saat menyelinap).
+    player.rippleT -= dt;
+    if (player.rippleT <= 0) {
+      player.rippleT = player.sneaking ? 0.5 : 0.34;
       state.ripples.push({
-        x: p.x, y: p.y, r: 4, max: p.sneaking ? 14 : 22,
-        left: 0.8, total: 0.8, color: '#2dd4bf',
+        x: player.x, y: player.y, r: 2, max: player.sneaking ? 12 : 20,
+        ttl: 0.8, t: 0, color: '#2dd4bf',
       });
-      p.stepAt = p.sneaking ? 0.55 : 0.34;
+    }
+    player.stepT -= dt;
+    if (player.stepT <= 0) {
+      player.stepT = player.sneaking ? 0.5 : 0.34;
+      if (sfx) sfx.step(player.sneaking);
     }
   }
+}
 
-  // Tripwires underfoot.
-  const wireIdx = tripwireAt(state, p.x, p.y);
-  if (wireIdx >= 0) {
-    const wire = FLOORS[state.floor].wires[wireIdx];
-    state.wiresCool[wireIdx] = 8;
-    guardsTripwire(state, wire);
-    showToast(state, 'TRIPWIRE!');
-    if (sfx) sfx.tripwire();
+// Lempar koin ke (tx,ty): koin melayang 0,35 detik lalu mendarat.
+export function throwCoin(player, state, tx, ty, sfx) {
+  if (state.coins <= 0) return false;
+  const d = dist(player.x, player.y, tx, ty);
+  if (d > COIN_THROW_MAX) {
+    tx = player.x + ((tx - player.x) / d) * COIN_THROW_MAX;
+    ty = player.y + ((ty - player.y) / d) * COIN_THROW_MAX;
   }
+  tx = clamp(tx, 20, 988);
+  ty = clamp(ty, 76, 700);
+  state.coins -= 1;
+  state.coinsFlying.push({
+    sx: player.x, sy: player.y, tx, ty, t: 0, dur: COIN_FLY_TIME,
+  });
+  if (sfx) sfx.coinThrow();
+  return true;
+}
 
-  // Shards: walk over one to pocket it.
-  const floor = FLOORS[state.floor];
-  for (let i = 0; i < floor.shards.length; i++) {
-    if (state.shardsTaken.has(i)) continue;
-    const s = floor.shards[i];
-    if (dist(p.x, p.y, s.x, s.y) <= PICKUP_R) {
-      state.shardsTaken.add(i);
-      state.shardsGot += 1;
-      state.score += SCORE_SHARD;
+// Koin yang sedang melayang: update, saat mendarat bunyi + guard mendengar.
+export function updateCoins(state, dt, sfx) {
+  for (let i = state.coinsFlying.length - 1; i >= 0; i--) {
+    const c = state.coinsFlying[i];
+    c.t += dt;
+    if (c.t >= c.dur) {
+      state.coinsFlying.splice(i, 1);
+      state.coinsLanded.push({ x: c.tx, y: c.ty, t: 0, ping: 0 });
+      state.coinNoiseT = 1.2;
+      if (sfx) sfx.coinLand();
+      guardsHearCoin(state, c.tx, c.ty);
+    }
+  }
+  for (let i = state.coinsLanded.length - 1; i >= 0; i--) {
+    const c = state.coinsLanded[i];
+    c.t += dt;
+    c.ping = Math.min(1, c.t / 0.6);
+    if (c.t > 2.2) state.coinsLanded.splice(i, 1);
+  }
+}
+
+// Bom asap di kaki Wren (2 per lantai).
+export function dropSmoke(player, state, sfx) {
+  if (state.smokesLeft <= 0) return false;
+  state.smokesLeft -= 1;
+  state.smokes.push({ x: player.x, y: player.y, r: SMOKE_R, ttl: SMOKE_TIME, t: 0 });
+  addEvent(state, 'Smoke out — cones go blind.');
+  if (sfx) sfx.smoke();
+  return true;
+}
+
+export function updateSmokes(state, dt) {
+  for (let i = state.smokes.length - 1; i >= 0; i--) {
+    const s = state.smokes[i];
+    s.t += dt;
+    if (s.t >= s.ttl) state.smokes.splice(i, 1);
+  }
+}
+
+// Padamkan lampu terdekat dalam jarak 100 (mati sisa lantai).
+export function douseLamp(player, state, sfx) {
+  let best = null, bestD = DOUSE_R;
+  for (const l of state.lampsOn) {
+    const d = dist(player.x, player.y, l.x, l.y);
+    if (d < bestD) { best = l; bestD = d; }
+  }
+  if (!best) return false;
+  state.lampsOn = state.lampsOn.filter((l) => l !== best);
+  addEvent(state, 'Lamp doused. Darkness helps.');
+  if (sfx) sfx.douse();
+  return true;
+}
+
+// Pungut shard di bawah kaki; buka exit kalau sudah lengkap.
+export function updateShards(player, state, sfx) {
+  for (const s of state.shards) {
+    if (!s.got && dist(player.x, player.y, s.x, s.y) < PICKUP_R) {
+      s.got = true;
+      state.score += SHARD_PTS;
+      state.take += SHARD_VALUE;
+      state.lootTotal += 1;
       addEvent(state, 'Ember shard pocketed.');
       if (sfx) sfx.shard();
-      if (exitOpen(state)) {
-        addEvent(state, 'The door stands open. Go!');
+      if (shardsLeft(state) === 0) {
+        addEvent(state, 'The exit stands open. Go!');
         if (sfx) sfx.door();
       }
     }
   }
 }
 
-// Throw a coin toward (tx, ty), clamped to the throw range.
-export function throwCoin(state, tx, ty, sfx) {
-  if (state.coins <= 0) return false;
-  const p = state.player;
-  const d = dist(p.x, p.y, tx, ty);
-  const reach = Math.min(d, COIN_THROW_MAX);
-  const a = Math.atan2(ty - p.y, tx - p.x);
-  const lx = p.x + Math.cos(a) * reach;
-  const ly = p.y + Math.sin(a) * reach;
-  state.coins -= 1;
-  state.coinsFlying.push({ sx: p.x, sy: p.y, tx: lx, ty: ly, t: 0 });
-  if (sfx) sfx.coinThrow();
-  return true;
+// Wren di dalam persegi exit?
+export function atExit(player, state) {
+  const e = state.floor.exit;
+  return player.x > e.x && player.x < e.x + e.w &&
+    player.y > e.y && player.y < e.y + e.h;
 }
 
-// Drop a smoke bomb at Wren's feet.
-export function dropSmoke(state, sfx) {
-  if (state.smokesLeft <= 0) return false;
-  const p = state.player;
-  state.smokesLeft -= 1;
-  state.smokes.push({ x: p.x, y: p.y, left: SMOKE_TIME });
-  addEvent(state, 'Smoke out — the cones go blind.');
-  if (sfx) sfx.smoke();
-  return true;
+// Lantai selesai: +200 poin, tandai malam selesai.
+export function completeFloor(state) {
+  state.score += FLOOR_PTS;
+  state.floorDone = true;
+  state.nightDone[state.floorIdx] = true;
 }
 
-// Douse the nearest lit lamp within reach.
-export function douseLamp(state, sfx) {
-  const p = state.player;
-  const floor = FLOORS[state.floor];
-  let best = -1;
-  let bestD = DOUSE_RANGE;
-  for (let i = 0; i < floor.lamps.length; i++) {
-    if (state.lampsOff.has(i)) continue;
-    const l = floor.lamps[i];
-    const d = dist(p.x, p.y, l.x, l.y);
-    if (d <= bestD) { best = i; bestD = d; }
-  }
-  if (best < 0) return false;
-  state.lampsOff.add(best);
-  addEvent(state, 'Lamp doused. The dark grows.');
-  if (sfx) sfx.douse();
-  return true;
-}
-
-// Advance coins in flight, landed pings, smoke clouds and wire timers.
-export function tickGadgets(state, dt, sfx) {
-  for (const c of state.coinsFlying) c.t += dt;
-  const landed = state.coinsFlying.filter((c) => c.t >= COIN_FLIGHT);
-  state.coinsFlying = state.coinsFlying.filter((c) => c.t < COIN_FLIGHT);
-  for (const c of landed) {
-    state.coinsLanded.push({ x: c.tx, y: c.ty, ping: 0 });
-    state.coinNoiseAt = state.time;
-    guardsHearCoin(state, c.tx, c.ty);
-    if (sfx) sfx.coinLand();
-  }
-  for (const c of state.coinsLanded) c.ping += dt;
-  state.coinsLanded = state.coinsLanded.filter((c) => c.ping < 1.2);
-  for (const s of state.smokes) s.left -= dt;
-  state.smokes = state.smokes.filter((s) => s.left > 0);
-  for (let i = 0; i < state.wiresCool.length; i++) {
-    state.wiresCool[i] = Math.max(0, state.wiresCool[i] - dt);
-  }
-}
-
-// Is Wren standing in the open exit doorway?
-export function atExit(state) {
-  if (!exitOpen(state)) return false;
-  const e = FLOORS[state.floor].exit;
-  const p = state.player;
-  return p.x > e.x - 6 && p.x < e.x + e.w + 6
-    && p.y > e.y - 6 && p.y < e.y + e.h + 6;
-}
-
-// Finish the floor: +200, and either the next floor or the win screen.
-// Returns 'next' or 'win'.
-export function finishFloor(state) {
-  state.score += SCORE_FLOOR;
-  if (state.floor >= FLOORS.length - 1) return 'win';
-  state.floor += 1;
-  return 'next';
-}
-
-// Respawn after being caught: lose a life, back to the entrance,
-// guards calm down.
-export function respawn(state) {
+// Tertangkap: nyawa -1, kembali ke pintu masuk, guard tenang.
+export function respawnAfterCatch(state, player, sfx) {
   state.lives -= 1;
-  const f = FLOORS[state.floor];
-  state.player.x = f.start.x;
-  state.player.y = f.start.y;
-  state.player.face = -Math.PI / 2;
-  state.smokes = [];
-  state.coinsFlying = [];
-  calmGuards(state);
+  state.caughtFlash = 1.4;
+  player.x = state.floor.start.x;
+  player.y = state.floor.start.y;
+  player.face = 0;
+  for (const g of state.guards) {
+    g.suspicion = 18;
+    g.peak = 0;
+    g.state = 'patrol';
+    g.lastSeen = null;
+    g.lookT = 0;
+    g.blindT = 0;
+  }
+  for (const c of state.cameras) c.alert = 0;
+  addEvent(state, 'Caught! Back to the door.');
+  if (sfx) sfx.caught();
+  if (state.lives <= 0) state.over = true;
+}
+
+// Near-miss: guard melewati suspicion 45 lalu pulih di bawah 15
+// tanpa pernah mengejar -> satu close call (+50) + toast.
+export function updateNearMiss(state, sfx) {
+  for (const g of state.guards) {
+    if (g.hadChase) continue;
+    if (g.peak >= 45 && g.suspicion < 15) {
+      state.closeCalls += 1;
+      state.score += CLOSE_CALL_PTS;
+      state.nearMissPct = Math.round(g.peak);
+      addEvent(state, 'Close call — almost had you.');
+      showToast(state, 'CLOSE CALL!', 1.6);
+      if (sfx) sfx.closeCall();
+      g.peak = 0;
+    }
+    if (g.suspicion < 15) g.peak = Math.min(g.peak, g.suspicion);
+  }
+}
+
+// Status Wren untuk label di bawahnya.
+export function playerZoneWord(player, state) {
+  if (inSmoke(player.x, player.y, state)) return { word: 'IN SMOKE', color: '#c7d2e8' };
+  if (lampAt(player.x, player.y, state)) return { word: 'IN THE LIGHT!', color: '#ff9f43' };
+  if (inShadow(player.x, player.y, state.floor)) return { word: 'HIDDEN', color: '#74c0fc' };
+  return { word: '', color: '#c7d2e8' };
+}
+
+// Apakah Wren sedang berlari (untuk cincin noise + exposure).
+export function isRunning(player) {
+  return player.moving && !player.sneaking;
 }

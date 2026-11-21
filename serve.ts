@@ -1,15 +1,15 @@
-// Emberwatch: Night Shift — static file server for local play.
-// Node 22 standard library only. Serves game/ on port 8080 unless
-// --port is given. Paths that escape the game root are refused.
+// EMBERWATCH: Night Shift — serve.ts
+// Server HTTP statis kecil untuk direktori game (dev only).
+// Node 22 stdlib saja. Port default 8080, atau --port N.
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { extname, join, normalize, resolve, sep } from 'node:path';
+import { join, extname, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = resolve(join(fileURLToPath(new URL('.', import.meta.url)), 'game'));
+const root = join(fileURLToPath(new URL('.', import.meta.url)), 'game');
 
-const MIME = {
+const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8',
@@ -18,45 +18,38 @@ const MIME = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
-  '.svg': 'image/svg+xml',
-  '.wav': 'audio/wav',
 };
 
-function portFromArgs() {
-  const idx = process.argv.indexOf('--port');
-  if (idx >= 0 && process.argv[idx + 1]) {
-    const p = Number(process.argv[idx + 1]);
-    if (Number.isInteger(p) && p > 0 && p < 65536) return p;
+let port = 8080;
+for (let i = 2; i < process.argv.length; i++) {
+  if (process.argv[i] === '--port' && process.argv[i + 1]) {
+    port = parseInt(process.argv[i + 1], 10);
   }
-  return 8080;
 }
 
 const server = createServer(async (req, res) => {
   try {
-    const raw = decodeURIComponent(new URL(req.url || '/', 'http://localhost').pathname);
-    let rel = normalize(raw).replace(/^[/\\]+/, '');
-    if (rel === '') rel = 'index.html';
-    const file = resolve(join(ROOT, rel));
-    if (!file.startsWith(ROOT + sep) && file !== ROOT) {
-      res.writeHead(403, { 'content-type': 'text/plain' });
+    const url = new URL(req.url || '/', 'http://localhost');
+    let path = decodeURIComponent(url.pathname);
+    if (path === '/') path = '/index.html';
+    // Tolak path yang keluar dari root game.
+    const full = normalize(join(root, path));
+    if (full !== root && !full.startsWith(root + sep)) {
+      res.writeHead(403);
       res.end('forbidden');
       return;
     }
-    const body = await readFile(file);
-    res.writeHead(200, { 'content-type': MIME[extname(file).toLowerCase()] || 'application/octet-stream' });
-    res.end(body);
-  } catch (err) {
-    if (err && err.code === 'ENOENT') {
-      res.writeHead(404, { 'content-type': 'text/plain' });
-      res.end('not found');
-    } else {
-      res.writeHead(500, { 'content-type': 'text/plain' });
-      res.end('server error');
-    }
+    const data = await readFile(full);
+    res.writeHead(200, {
+      'content-type': MIME[extname(full)] || 'application/octet-stream',
+    });
+    res.end(data);
+  } catch {
+    res.writeHead(404);
+    res.end('not found');
   }
 });
 
-const port = portFromArgs();
 server.listen(port, () => {
-  console.log(`Emberwatch serving game/ at http://localhost:${port}`);
+  console.log('Emberwatch serving game/ at http://localhost:' + port + '/');
 });
