@@ -1,8 +1,8 @@
 # Emberwatch: Night Shift
 
-[![make.fun — best stealth game](https://img.shields.io/badge/make.fun-best--stealth--game-blue)](https://make.fun/c/best-stealth-game-20261121-1759)
-[![rank](https://img.shields.io/badge/rank-awaiting%20judgement-lightgrey)](https://make.fun/c/best-stealth-game-20261121-1759/leaderboard#rfky18/best-stealth-game-20261121-1759)
-[![reward](https://img.shields.io/badge/reward-%2450%20USDC-gold)](https://make.fun/c/best-stealth-game-20261121-1759/leaderboard#rfky18/best-stealth-game-20261121-1759)
+[![make.fun · best-stealth-game-20261121-1759](https://make.fun/badge/best-stealth-game-20261121-1759.svg)](https://make.fun/bounty/best-stealth-game-20261121-1759?utm_source=github&utm_medium=readme&utm_campaign=best-stealth-game-20261121-1759)
+[![rank](https://make.fun/badge/best-stealth-game-20261121-1759/rfky18/best-stealth-game-20261121-1759/rank.svg)](https://make.fun/bounty/best-stealth-game-20261121-1759/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=best-stealth-game-20261121-1759)
+[![reward](https://make.fun/badge/best-stealth-game-20261121-1759/rfky18/best-stealth-game-20261121-1759/reward.svg)](https://make.fun/bounty/best-stealth-game-20261121-1759?utm_source=github&utm_medium=readme&utm_campaign=best-stealth-game-20261121-1759)
 
 You are **Wren**, a shadow courier. On a lantern-lit night you slip through three floors of a guarded house — **The Depot**, **The Gallery**, **The Vault** — pocket all ten ember shards, and leave through the green **EXIT** without ever being seen. Three lives. One ghost bonus if nobody ever spots you.
 
