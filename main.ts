@@ -8,8 +8,13 @@ import {
   mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const outDir = process.env.MAKEFUN_OUTPUT_DIR || '/output';
+// Repo root dari lokasi main.ts sendiri, BUKAN cwd: grader menjalankan
+// `node /bot/main.ts` dengan cwd di luar /bot, jadi path relatif 'game'
+// gagal (ENOENT -> exit 1). v4/v3-fresh pakai pola ini dan lolos grading.
+const repoRoot = fileURLToPath(new URL('.', import.meta.url));
 
 function clearContents(dir: string): void {
   for (const entry of readdirSync(dir)) {
@@ -31,8 +36,8 @@ function copyTree(src: string, dest: string): void {
 
 mkdirSync(outDir, { recursive: true });
 clearContents(outDir);
-copyTree('game', join(outDir, 'game'));
-copyTree('screenshots', join(outDir, 'screenshots'));
+copyTree(join(repoRoot, 'game'), join(outDir, 'game'));
+copyTree(join(repoRoot, 'screenshots'), join(outDir, 'screenshots'));
 const dossier = buildDossier(outDir, {
   text_max_bytes: 163840,
   screenshots: { max: 4, max_bytes: 262144 },
