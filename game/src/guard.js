@@ -1,11 +1,12 @@
 // The night guards: fixed patrol loops, a vision cone, and a suspicion
 // meter that climbs in three stages — curious, alert, chase — and falls
 // back when Wren slips out of sight. Nothing here insta-fails the player:
-// being seen starts a countdown the player can still escape, and a guard
-// who hears a tossed coin walks over to look at the noise instead.
-import { TUNE } from './config.js';
+// being seen starts a countdown the player can still escape, a guard who
+// hears a tossed coin walks over to look at the noise instead, and a
+// tripped wire only makes the whole floor curious, not caught.
+import { SCORE, TUNE } from './config.js';
 import {
-  hasLineOfSight, inLight, inShadow, levelOf, showToast,
+  hasLineOfSight, inLight, inShadow, inSmoke, levelOf, pushEvent,
 } from './world.js';
 
 /** Smallest signed angle from a to b, in (-PI, PI]. */
@@ -16,12 +17,32 @@ export function angleDiff(a, b) {
   return d;
 }
 
+/** True when the segment between two points crosses any smoke cloud. */
+function smokeBetween(world, x0, y0, x1, y1) {
+  for (const cloud of world.smoke) {
+    // Sample the segment; a cloud in the way blinds the guard.
+    const dist = Math.hypot(x1 - x0, y1 - y0);
+    const steps = Math.max(1, Math.ceil(dist / 10));
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      const px = x0 + (x1 - x0) * t;
+      const py = y0 + (y1 - y0) * t;
+      const dx = px - cloud.x;
+      const dy = py - cloud.y;
+      if (dx * dx + dy * dy <= TUNE.smokeRadius * TUNE.smokeRadius) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Can this guard see the player right now? Inside the cone's range and
- * half-angle, with an unblocked line of sight. The cone is a wedge, not
- * a circle: standing behind a guard is safe even up close.
+ * half-angle, with an unblocked line of sight — and no smoke between
+ * them. The cone is a wedge, not a circle: standing behind a guard is
+ * safe even up close, and standing in smoke is safe from any side.
  */
 export function guardSeesPlayer(world, guard, player) {
+  if (inSmoke(world, player.x, player.y)) return false;
   const level = levelOf(world);
   const dx = player.x - guard.x;
   const dy = player.y - guard.y;
@@ -30,7 +51,8 @@ export function guardSeesPlayer(world, guard, player) {
   if (dist > 4 && Math.abs(angleDiff(guard.facing, Math.atan2(dy, dx))) > TUNE.coneHalfAngle) {
     return false;
   }
-  return hasLineOfSight(level, guard.x, guard.y, player.x, player.y);
+  if (!hasLineOfSight(level, guard.x, guard.y, player.x, player.y)) return false;
+  return !smokeBetween(world, guard.x, guard.y, player.x, player.y);
 }
 
 /** Cone colour by state: calm yellow, curious gold, alert orange, red chase. */
@@ -39,6 +61,14 @@ export function coneColor(guard) {
   if (guard.suspicion >= TUNE.alertAt) return 'rgba(255, 149, 0, 0.34)';
   if (guard.suspicion > 12) return 'rgba(255, 204, 0, 0.30)';
   return 'rgba(255, 214, 90, 0.20)';
+}
+
+/** Words for a guard's state, as the panel's guard list prints them. */
+export function guardStateWord(guard) {
+  if (guard.state === 'chase') return 'CHASING';
+  if (guard.state === 'investigate') return 'SUSPICIOUS';
+  if (guard.suspicion > 12) return 'CURIOUS';
+  return 'PATROL';
 }
 
 /** The patrol definition (waypoints, pause, speed) of a guard by index. */
@@ -73,7 +103,28 @@ export function hearCoin(world, x, y) {
       guard.lastSeen = { x, y };
       guard.investigateAt = { x, y };
     }
+    pushEvent(world, `${guard.name} heard something…`);
   }
+}
+
+/**
+ * A tripwire just tripped. The whole floor gets curious at once and
+ * walks toward the wire — loud, but not a chase, so a quick Wren can
+ * still slip away in the confusion.
+ */
+export function tripWire(world, wire) {
+  for (const guard of world.guards) {
+    guard.suspicion = Math.min(100, guard.suspicion + TUNE.tripwireSuspicion);
+    if (guard.state !== 'chase') {
+      guard.state = 'investigate';
+      guard.investigateAt = {
+        x: (wire.x1 + wire.x2) / 2,
+        y: (wire.y1 + wire.y2) / 2,
+      };
+      guard.lastSeen = guard.investigateAt;
+    }
+  }
+  pushEvent(world, 'TRIPWIRE TRIPPED — the floor is looking!');
 }
 
 /**
@@ -121,7 +172,8 @@ export function updateGuard(guard, index, world, dt, onAlarm) {
   if (guard.hot && guard.suspicion < TUNE.nearMissCoolBelow && guard.state !== 'chase') {
     guard.hot = false;
     world.nearMisses += 1;
-    showToast(world, 'CLOSE CALL!', 1.6);
+    world.score += SCORE.nearMiss;
+    pushEvent(world, 'Close call — they almost had you.');
   }
 
   // --- state machine ---
@@ -130,6 +182,7 @@ export function updateGuard(guard, index, world, dt, onAlarm) {
   else if (guard.suspicion >= TUNE.alertAt) guard.state = 'investigate';
   else if (guard.state !== 'patrol' && guard.unseenFor > TUNE.forgetAfterSec) {
     guard.state = 'patrol';
+    pushEvent(world, `${guard.name} lost the trail.`);
   }
   if (guard.state === 'investigate' && guard.suspicion < TUNE.alertAt - 8) {
     guard.state = 'patrol';
@@ -139,14 +192,26 @@ export function updateGuard(guard, index, world, dt, onAlarm) {
     guard.suspicion = Math.max(guard.suspicion, TUNE.alertAt);
   }
 
-  // The alarm sound fires once per escalation to chase.
-  if (guard.state === 'chase' && wasState !== 'chase' && !guard.alerted) {
-    guard.alerted = true;
+  // The alarm sound fires once per escalation to chase, and the chase
+  // counts as being spotted — it costs the GHOST bonus at the end.
+  if (guard.state === 'chase' && wasState !== 'chase') {
+    if (!guard.spottedCounted) {
+      guard.spottedCounted = true;
+      world.spotted += 1;
+    }
+    pushEvent(world, `${guard.name}: WHAT WAS THAT?`);
     if (onAlarm) onAlarm();
   }
-  if (guard.state === 'patrol') guard.alerted = false;
+  if (guard.state === 'investigate' && wasState === 'patrol') {
+    pushEvent(world, `${guard.name} is suspicious…`);
+  }
+  if (guard.state === 'patrol') {
+    guard.alerted = false;
+    guard.spottedCounted = false;
+  }
 
   // --- movement ---
+  const chaseSpeed = world.levelIndex === 2 ? TUNE.vaultChaseSpeed : TUNE.chaseSpeed;
   if (guard.state === 'patrol') {
     if (guard.pauseLeft > 0) {
       guard.pauseLeft -= dt;
@@ -177,7 +242,7 @@ export function updateGuard(guard, index, world, dt, onAlarm) {
       }
     }
   } else if (guard.state === 'chase') {
-    stepToward(guard, player.x, player.y, TUNE.chaseSpeed, dt);
+    stepToward(guard, player.x, player.y, chaseSpeed, dt);
   }
 
   // --- footstep ripples, one every stride ---

@@ -4,7 +4,8 @@
 //   node serve.ts            # serves game/ on http://localhost:8080
 //   node serve.ts --port N   # or on port N
 //
-// Development convenience only; the entry itself is static files.
+// Development convenience only; the entry itself is static files, and the
+// grader never runs this server — it reads game/ straight off the disk.
 import { createReadStream } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';

@@ -1,23 +1,27 @@
 // Boot and the one loop: input is read every frame, the world advances in
 // fixed 1/60 s steps (several in a slow frame, none in a fast one), and the
 // renderer paints what is there. The game moves between four screens:
-// title, play, paused and game over — and between the depot and the
-// gallery, with a level card in between.
+// title, play, paused and game over — and between the depot, the gallery
+// and the vault, with a level card in between. Slip out unseen and the
+// GHOST bonus lands once, at the win.
 //
-// ?shot=cover|nearmiss|distract|exit (with &seed=N) stages that scene
+// ?shot=cover|nearmiss|smoke|exit (with &seed=N) stages that scene
 // instead of running the loop, paints it twice and sets
 // documentElement.dataset.shotReady for a screenshot.
-import { BEST_KEY, LEVELS } from './config.js';
-import { createWorld, loadLevel, resetWorld } from './world.js';
+import { BEST_KEY, LEVELS, SCORE } from './config.js';
+import { createWorld, loadLevel, pushEvent, resetWorld } from './world.js';
 import { updateGuard, guardCaughtPlayer } from './guard.js';
-import { updatePlayer, updateCoin, updatePings, respawnPlayer } from './player.js';
+import {
+  updatePlayer, updateCoin, updateEffects, respawnPlayer,
+} from './player.js';
 import {
   createKeys, createInput, takeAction, takeCoinTarget,
-  ACTION_CONFIRM, ACTION_PAUSE, ACTION_RESTART, ACTION_MUTE, ACTION_TOSS,
+  ACTION_CONFIRM, ACTION_PAUSE, ACTION_RESTART, ACTION_MUTE,
+  ACTION_TOSS, ACTION_SMOKE, ACTION_DOUSE,
 } from './input.js';
 import {
   ensureAudio, toggleMute, playFootstep, playAlarm, playCoin, playShard,
-  playUnlock, playCaught,
+  playUnlock, playCaught, playSmoke, playDouse, playTripwire,
 } from './audio.js';
 import { createRenderer, SCREEN_TITLE, SCREEN_PLAY, SCREEN_PAUSED, SCREEN_OVER } from './render.js';
 import { stageShot } from './shots.js';
@@ -25,7 +29,7 @@ import { stageShot } from './shots.js';
 /** The longest frame the loop catches up on; a longer stall is dropped. */
 const MAX_FRAME = 0.25;
 const STEP = 1 / 60;
-/** How long the level card stays up between the depot and the gallery. */
+/** How long the level card stays up between floors. */
 const LEVEL_CARD_SECONDS = 2.6;
 
 const params = new URLSearchParams(window.location.search);
@@ -49,7 +53,7 @@ function saveBest(value) {
   try {
     window.localStorage.setItem(BEST_KEY, String(value));
   } catch {
-    // Storage can be off (private windows): the best time lasts one visit.
+    // Storage can be off (private windows): the best score lasts one visit.
   }
 }
 
@@ -61,14 +65,28 @@ function announce(message) {
 /** One fixed step of the living game: player, coin, then every guard. */
 function stepWorld(dt, sounds) {
   const beforeShards = world.shardsTaken;
-  const stepped = updatePlayer(world, keys, dt, sounds.tossAt);
+  const beforeSmoke = world.smokeLeft;
+  const beforeLamps = world.lampsLive.length;
+  const wireCool = world.wires.map((wire) => wire.coolLeft);
+  const stepped = updatePlayer(world, keys, dt, sounds.tossAt, sounds.smoke, sounds.douse);
   if (stepped) sounds.step(world.player.sneaking);
   if (world.shardsTaken > beforeShards) {
     sounds.shard();
     if (world.shardsTaken >= LEVELS[world.levelIndex].shards.length) sounds.unlock();
   }
+  if (world.smokeLeft < beforeSmoke) {
+    sounds.smokeSound();
+    pushEvent(world, 'Smoke out — the cones go blind.');
+  }
+  if (world.lampsLive.length < beforeLamps) {
+    sounds.douseSound();
+    pushEvent(world, 'Lantern doused — the dark grows.');
+  }
+  for (let i = 0; i < world.wires.length; i++) {
+    if (wireCool[i] <= 0 && world.wires[i].coolLeft > 0) sounds.tripwire();
+  }
   updateCoin(world, dt, sounds.coin);
-  updatePings(world, dt);
+  updateEffects(world, dt);
   for (let i = 0; i < world.guards.length; i++) {
     updateGuard(world.guards[i], i, world, dt, sounds.alarm);
   }
@@ -112,15 +130,19 @@ function runGame() {
   const input = createInput(keys, canvas);
   let screen = SCREEN_TITLE;
   let best = readBest();
+  let ghostAwarded = false;
   let accumulator = 0;
   let last = performance.now();
   let stepSounds = {
     shard: playShard, unlock: playUnlock, alarm: playAlarm,
-    caught: playCaught, step: playFootstep, coin: playCoin, tossAt: null,
+    caught: playCaught, step: playFootstep, coin: playCoin,
+    smokeSound: playSmoke, douseSound: playDouse, tripwire: playTripwire,
+    tossAt: null, smokePressed: false, dousePressed: false,
   };
 
   function startGame() {
     resetWorld(world);
+    ghostAwarded = false;
     takeCoinTarget(keys); // a click that started the game is not a coin toss
     accumulator = 0;
     screen = SCREEN_PLAY;
@@ -194,7 +216,7 @@ function runGame() {
       return;
     }
 
-    // The level card: a beat between floors, then the gallery loads.
+    // The level card: a beat between floors, then the next floor loads.
     if (world.status === 'levelcard') {
       world.statusTimer += elapsed;
       if (world.statusTimer > LEVEL_CARD_SECONDS) {
@@ -207,9 +229,16 @@ function runGame() {
     }
 
     if (world.status === 'won') {
-      const ms = Math.round(world.time * 1000);
-      if (!best || ms < best) {
-        best = ms;
+      // The GHOST bonus lands once, the moment the night is won unseen.
+      if (!ghostAwarded) {
+        ghostAwarded = true;
+        if (world.spotted === 0) {
+          world.score += SCORE.ghost;
+          pushEvent(world, `GHOST BONUS +${SCORE.ghost} — never spotted!`);
+        }
+      }
+      if (!best || world.score > best) {
+        best = world.score;
         saveBest(best);
       }
       renderer.draw(world, SCREEN_PLAY, best);
@@ -222,16 +251,25 @@ function runGame() {
       return;
     }
 
-    // One coin toss per click or C press, aimed at the clicked spot.
+    // One coin toss per click or C press, aimed at the clicked spot;
+    // one smoke bomb per Q press, one douse per E press.
     stepSounds.tossAt = takeCoinTarget(keys);
     if (takeAction(keys, ACTION_TOSS)) stepSounds.tossAt = tossAhead();
+    stepSounds.smokePressed = takeAction(keys, ACTION_SMOKE);
+    stepSounds.dousePressed = takeAction(keys, ACTION_DOUSE);
 
     accumulator += elapsed;
     while (accumulator >= STEP) {
       accumulator -= STEP;
       world.time += STEP;
-      stepWorld(STEP, stepSounds);
+      stepWorld(STEP, {
+        ...stepSounds,
+        smoke: stepSounds.smokePressed,
+        douse: stepSounds.dousePressed,
+      });
       stepSounds.tossAt = null;
+      stepSounds.smokePressed = false;
+      stepSounds.dousePressed = false;
       if (world.player.caughtFlash > 0) {
         world.player.caughtFlash = Math.max(0, world.player.caughtFlash - STEP);
       }
